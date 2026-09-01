@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_example_001",
+  "event_type": "created",
+  "tenant_id": "personal-example",
+  "source_type": "web",
+  "source_id": "page-001",
+  "source_version": "1",
+  "source_url": "https://example.invalid/page-001",
+  "title": "Example source",
+  "body": "Hydrated source text.",
+  "acl": [
+    {
+      "principal_type": "user",
+      "principal_id": "user-example",
+      "permission": "read"
+    }
+  ],
+  "hydration": {
+    "hydrated_at": "2026-09-01T00:00:00Z",
+    "method": "manual",
+    "quality": "original"
+  },
+  "evidence_boundary": {
+    "proves": ["The source contained this text at version 1."],
+    "does_not_prove": ["The source claim is correct."]
+  }
+}

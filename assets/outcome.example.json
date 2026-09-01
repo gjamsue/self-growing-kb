@@ -1,0 +1,20 @@
+{
+  "trace_id": "trace_replace_me",
+  "agent_id": "research-agent",
+  "task_id": "task-example",
+  "tenant_id": "personal-example",
+  "principal": "user-example",
+  "outcome_summary": "The task reused a source-backed decision framework.",
+  "claims": [],
+  "decisions": [],
+  "artifacts": [],
+  "suggested_updates": [
+    {
+      "type": "new_node",
+      "title": "Example reusable method",
+      "summary": "A reusable method supported by the cited source.",
+      "evidence": ["evt_example_001"],
+      "permission_scope": "user-example"
+    }
+  ]
+}

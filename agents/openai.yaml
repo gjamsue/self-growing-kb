@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self-Growing Knowledge Base"
+  short_description: "Portable evidence-backed knowledge growth workflows"
+  default_prompt: "Use $self-growing-kb to query this knowledge base and propose evidence-backed updates."

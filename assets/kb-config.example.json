@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "profile": "personal",
+  "tenant_id": "replace-with-stable-tenant-id",
+  "query": {
+    "include_raw_by_default": true,
+    "default_limit": 8
+  }
+}

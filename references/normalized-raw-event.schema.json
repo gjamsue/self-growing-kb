@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/self-growing-kb/normalized-raw-event.schema.json",
+  "title": "Normalized Raw Event",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "tenant_id",
+    "source_type",
+    "source_id",
+    "source_version",
+    "title",
+    "body",
+    "acl",
+    "hydration",
+    "evidence_boundary"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "event_type": {"enum": ["created", "updated", "deleted", "permission_changed"]},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "source_type": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "source_version": {"type": "string", "minLength": 1},
+    "source_url": {"type": "string"},
+    "title": {"type": "string"},
+    "body": {"type": "string"},
+    "acl": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["principal_type", "principal_id", "permission"],
+        "properties": {
+          "principal_type": {"type": "string"},
+          "principal_id": {"type": "string"},
+          "permission": {"const": "read"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "hydration": {
+      "type": "object",
+      "required": ["quality"],
+      "properties": {
+        "hydrated_at": {"type": "string"},
+        "method": {"type": "string"},
+        "quality": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "evidence_boundary": {
+      "type": "object",
+      "required": ["proves", "does_not_prove"],
+      "properties": {
+        "proves": {"type": "array", "items": {"type": "string"}},
+        "does_not_prove": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

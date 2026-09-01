@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/self-growing-kb/agent-outcome.schema.json",
+  "title": "Agent Knowledge Outcome",
+  "type": "object",
+  "required": ["trace_id", "agent_id", "task_id", "tenant_id", "principal", "outcome_summary"],
+  "properties": {
+    "trace_id": {"type": "string", "minLength": 1},
+    "agent_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "principal": {"type": "string", "minLength": 1},
+    "outcome_summary": {"type": "string", "minLength": 1},
+    "claims": {"type": "array"},
+    "decisions": {"type": "array"},
+    "artifacts": {"type": "array"},
+    "suggested_updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "title", "summary", "evidence", "permission_scope"],
+        "properties": {
+          "type": {"type": "string"},
+          "title": {"type": "string"},
+          "summary": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "permission_scope": {"type": "string"},
+          "cross_repository": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
