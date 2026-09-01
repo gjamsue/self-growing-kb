@@ -16,5 +16,14 @@
       "evidence": ["evt_example_001"],
       "permission_scope": "user-example"
     }
+  ],
+  "learning_signals": [
+    {
+      "signal_type": "successful_pattern",
+      "title": "Example reusable method",
+      "summary": "The method produced a verified task outcome.",
+      "evidence": ["evt_example_001"],
+      "permission_scope": "user-example"
+    }
   ]
 }

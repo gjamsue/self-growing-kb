@@ -58,6 +58,23 @@
         "does_not_prove": {"type": "array", "items": {"type": "string"}}
       },
       "additionalProperties": false
+    },
+    "knowledge_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["memory_type", "topic_key", "title", "summary", "permission_scope"],
+        "properties": {
+          "memory_type": {"enum": ["fact", "event", "instruction", "task"]},
+          "topic_key": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1},
+          "summary": {"type": "string", "minLength": 1},
+          "permission_scope": {"type": "string", "minLength": 1},
+          "confidence": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
     }
   },
   "additionalProperties": true

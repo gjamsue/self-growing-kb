@@ -24,7 +24,14 @@ KB_DIRS = (
     "05_Lint",
     ".kb/traces",
     ".kb/outcomes",
+    ".kb/compile-queue/pending",
+    ".kb/compile-queue/processed",
+    ".kb/compile-queue/failed",
+    ".kb/indexes",
+    ".kb/gaps",
 )
+
+SCHEMA_VERSION = 2
 
 REQUIRED_EVENT_FIELDS = (
     "event_id",
@@ -52,6 +59,7 @@ HIGH_RISK_TYPES = {
 
 AUTO_TYPES = {"add_source", "add_link", "add_tag", "increment_usage", "mark_stale"}
 DRAFT_TYPES = {"new_node", "expand_node", "update_node"}
+MEMORY_TYPES = {"fact", "event", "instruction", "task"}
 
 
 class KBError(ValueError):
@@ -90,6 +98,20 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def stable_hash(value: Any, length: int = 24) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:length]
+
+
+def load_index(root: Path, name: str, default: dict[str, Any]) -> dict[str, Any]:
+    path = root / ".kb" / "indexes" / f"{name}.json"
+    return read_json(path) if path.exists() else dict(default)
+
+
+def save_index(root: Path, name: str, value: dict[str, Any]) -> None:
+    write_json(root / ".kb" / "indexes" / f"{name}.json", value)
+
+
 def load_config(root: Path) -> dict[str, Any]:
     config = read_json(root / "kb.json")
     for key in ("schema_version", "profile", "tenant_id"):
@@ -110,7 +132,7 @@ def init_kb(root: Path, profile: str, tenant_id: str) -> dict[str, Any]:
     for relative in KB_DIRS:
         (root / relative).mkdir(parents=True, exist_ok=True)
     config = {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "profile": profile,
         "tenant_id": tenant_id,
         "created_at": utc_now(),
@@ -122,6 +144,23 @@ def init_kb(root: Path, profile: str, tenant_id: str) -> dict[str, Any]:
         encoding="utf-8",
     )
     return {"status": "initialized", "root": str(root), "config": config}
+
+
+def migrate_kb(root: Path) -> dict[str, Any]:
+    config = load_config(root)
+    current = int(config["schema_version"])
+    if current > SCHEMA_VERSION:
+        raise KBError(f"Repository schema {current} is newer than supported schema {SCHEMA_VERSION}")
+    for relative in KB_DIRS:
+        (root / relative).mkdir(parents=True, exist_ok=True)
+    if current == SCHEMA_VERSION:
+        return {"status": "already_current", "schema_version": current}
+    if current != 1:
+        raise KBError(f"No migration path from schema {current}")
+    config["schema_version"] = SCHEMA_VERSION
+    config["migrated_at"] = utc_now()
+    write_json(root / "kb.json", config)
+    return {"status": "migrated", "from": current, "to": SCHEMA_VERSION}
 
 
 def validate_event(event: dict[str, Any], tenant_id: str) -> None:
@@ -137,6 +176,20 @@ def validate_event(event: dict[str, Any], tenant_id: str) -> None:
     boundary = event["evidence_boundary"]
     if not isinstance(boundary, dict) or "proves" not in boundary or "does_not_prove" not in boundary:
         raise KBError("Raw Event evidence_boundary must include proves and does_not_prove")
+    candidates = event.get("knowledge_candidates", [])
+    if not isinstance(candidates, list):
+        raise KBError("Raw Event knowledge_candidates must be a list")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise KBError("Each knowledge candidate must be an object")
+        missing_candidate = [
+            key for key in ("memory_type", "topic_key", "title", "summary", "permission_scope")
+            if not candidate.get(key)
+        ]
+        if missing_candidate:
+            raise KBError(f"Knowledge candidate missing fields: {', '.join(missing_candidate)}")
+        if candidate["memory_type"] not in MEMORY_TYPES:
+            raise KBError(f"Unknown memory_type: {candidate['memory_type']}")
 
 
 def event_key(event: dict[str, Any]) -> str:
@@ -146,28 +199,122 @@ def event_key(event: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def event_content_hash(event: dict[str, Any]) -> str:
+    content = {
+        key: event.get(key)
+        for key in (
+            "event_type",
+            "title",
+            "body",
+            "content_blocks",
+            "attachments",
+            "acl",
+            "hydration",
+            "evidence_boundary",
+            "knowledge_candidates",
+        )
+    }
+    return stable_hash(content, 64)
+
+
+def changed_event_fields(previous: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    ignored = {
+        "event_id",
+        "source_version",
+        "ingested_at",
+        "ingest_sequence",
+        "idempotency_key",
+        "content_hash",
+        "version_chain",
+    }
+    keys = set(previous) | set(current)
+    return sorted(key for key in keys - ignored if previous.get(key) != current.get(key))
+
+
+def find_previous_event(root: Path, event: dict[str, Any]) -> tuple[Path, dict[str, Any]] | None:
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for path in (root / "01_Raw" / "events").glob("*.json"):
+        record = read_json(path)
+        if record.get("source_type") == event["source_type"] and record.get("source_id") == event["source_id"]:
+            matches.append((path, record))
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda item: (
+            int(item[1].get("ingest_sequence", 0)),
+            str(item[1].get("ingested_at", "")),
+            item[0].name,
+        )
+    )
+    return matches[-1]
+
+
 def ingest_event(root: Path, event: dict[str, Any]) -> dict[str, Any]:
     config = load_config(root)
+    if int(config["schema_version"]) < SCHEMA_VERSION:
+        raise KBError("Repository must be migrated before ingest: run `kb.py migrate <root>`")
     validate_event(event, config["tenant_id"])
     key = event_key(event)
     target = root / "01_Raw" / "events" / f"{key}.json"
     record = dict(event)
     record["idempotency_key"] = key
+    record["content_hash"] = event_content_hash(event)
     record.setdefault("ingested_at", utc_now())
     if target.exists():
         existing = read_json(target)
-        comparable_existing = {k: v for k, v in existing.items() if k != "ingested_at"}
-        comparable_record = {k: v for k, v in record.items() if k != "ingested_at"}
-        if comparable_existing != comparable_record:
+        if any(existing.get(field) != value for field, value in event.items()):
             raise KBError("Idempotency collision: source version already exists with different content")
         return {"status": "duplicate", "raw_event_id": event["event_id"], "idempotency_key": key}
+    state = load_index(root, "state", {"next_ingest_sequence": 1})
+    record["ingest_sequence"] = int(state.get("next_ingest_sequence", 1))
+    state["next_ingest_sequence"] = record["ingest_sequence"] + 1
+    previous = find_previous_event(root, event)
+    if previous:
+        previous_path, previous_record = previous
+        record["version_chain"] = {
+            "previous_event_key": previous_path.stem,
+            "previous_version": previous_record.get("source_version"),
+            "changed_fields": changed_event_fields(previous_record, record),
+            "content_unchanged": previous_record.get("content_hash") == record["content_hash"],
+        }
+    else:
+        record["version_chain"] = {
+            "previous_event_key": None,
+            "previous_version": None,
+            "changed_fields": [],
+            "content_unchanged": False,
+        }
     write_json(target, record)
+    job = {
+        "job_id": f"compile_{key}",
+        "event_key": key,
+        "tenant_id": config["tenant_id"],
+        "status": "pending",
+        "created_at": utc_now(),
+        "content_hash": record["content_hash"],
+        "ingest_sequence": record["ingest_sequence"],
+    }
+    write_json(root / ".kb" / "compile-queue" / "pending" / f"compile_{key}.json", job)
+
+    sources = load_index(root, "sources", {"sources": {}})
+    source_key = f"{event['source_type']}:{event['source_id']}"
+    sources["sources"][source_key] = {
+        "latest_event_key": key,
+        "latest_version": event["source_version"],
+        "content_hash": record["content_hash"],
+        "updated_at": record["ingested_at"],
+    }
+    save_index(root, "sources", sources)
+    save_index(root, "state", state)
     return {
         "status": "accepted",
         "raw_event_id": event["event_id"],
         "idempotency_key": key,
         "path": str(target.relative_to(root)),
-        "queued_jobs": ["semantic_compile"],
+        "content_hash": record["content_hash"],
+        "previous_event_key": record["version_chain"]["previous_event_key"],
+        "changed_fields": record["version_chain"]["changed_fields"],
+        "queued_jobs": [job["job_id"]],
     }
 
 
@@ -279,6 +426,28 @@ def query_kb(root: Path, question: str, principal: str, limit: int, include_raw:
         "gaps": gaps,
     }
     write_json(root / ".kb" / "traces" / f"{trace_id}.json", trace)
+    usage = load_index(root, "usage", {"documents": {}, "queries": 0})
+    usage["queries"] = int(usage.get("queries", 0)) + 1
+    for document in selected:
+        usage_key = f"{document.kind}:{document.identifier}"
+        item = usage["documents"].setdefault(usage_key, {"count": 0, "last_used_at": None})
+        item["count"] += 1
+        item["last_used_at"] = trace["created_at"]
+    save_index(root, "usage", usage)
+    if not selected:
+        gap_key = stable_hash({"tenant_id": config["tenant_id"], "question": question.strip().lower()})
+        gap_path = root / ".kb" / "gaps" / f"{gap_key}.json"
+        gap = read_json(gap_path) if gap_path.exists() else {
+            "gap_id": gap_key,
+            "question": question,
+            "tenant_id": config["tenant_id"],
+            "count": 0,
+            "first_seen_at": trace["created_at"],
+        }
+        gap["count"] += 1
+        gap["last_seen_at"] = trace["created_at"]
+        gap["latest_trace_id"] = trace_id
+        write_json(gap_path, gap)
     return {
         "trace_id": trace_id,
         "question": question,
@@ -318,6 +487,171 @@ def proposal_decision(update: dict[str, Any]) -> tuple[str, str]:
     return "review_required", "Unknown mutation types require review."
 
 
+def create_proposal(
+    root: Path,
+    config: dict[str, Any],
+    update: dict[str, Any],
+    origin: dict[str, Any],
+) -> dict[str, Any]:
+    decision, reason = proposal_decision(update)
+    fingerprint = stable_hash({"tenant_id": config["tenant_id"], "update": update, "origin": origin})
+    proposal_id = f"prop_{fingerprint}"
+    path = root / "04_Promote" / "proposals" / f"{proposal_id}.json"
+    if path.exists():
+        proposal = read_json(path)
+        return {"proposal_id": proposal_id, "decision": proposal["decision"], "status": proposal["status"]}
+    proposal = {
+        "proposal_id": proposal_id,
+        "fingerprint": fingerprint,
+        "created_at": utc_now(),
+        "status": "pending" if decision != "blocked" else "blocked",
+        "decision": decision,
+        "reason": reason,
+        "tenant_id": config["tenant_id"],
+        **origin,
+        "update": update,
+    }
+    write_json(path, proposal)
+    return {"proposal_id": proposal_id, "decision": decision, "status": proposal["status"]}
+
+
+def candidate_scope(event: dict[str, Any], requested_scope: str) -> str:
+    readable = [entry for entry in event.get("acl", []) if entry.get("permission") == "read"]
+    if any(entry.get("principal_type") == "public" for entry in readable):
+        return requested_scope
+    if any(entry.get("principal_id") == requested_scope for entry in readable):
+        return requested_scope
+    return "unknown"
+
+
+def source_permission_scope(event: dict[str, Any]) -> str:
+    readable = [entry for entry in event.get("acl", []) if entry.get("permission") == "read"]
+    if any(entry.get("principal_type") == "public" for entry in readable):
+        return "public"
+    principals = sorted(str(entry.get("principal_id")) for entry in readable if entry.get("principal_id"))
+    return f"acl:{stable_hash(principals)}" if principals else "unknown"
+
+
+def candidate_update(candidate: dict[str, Any], event: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any] | None:
+    memory_type = candidate["memory_type"]
+    evidence = list(candidate.get("evidence") or [event["event_id"]])
+    base = {
+        "title": candidate["title"],
+        "summary": candidate["summary"],
+        "evidence": evidence,
+        "permission_scope": candidate_scope(event, str(candidate["permission_scope"])),
+        "topic_key": candidate["topic_key"],
+        "memory_type": memory_type,
+        "confidence": candidate.get("confidence", "unknown"),
+    }
+    if memory_type == "task":
+        return None
+    if previous is None or memory_type == "event":
+        return {"type": "new_node", **base}
+    if previous.get("content_hash") == stable_hash({"title": candidate["title"], "summary": candidate["summary"]}, 64):
+        return {"type": "add_source", **base}
+    if memory_type in {"fact", "instruction"}:
+        return {
+            "type": "rewrite_fact",
+            **base,
+            "supersedes_proposal_id": previous.get("latest_proposal_id"),
+        }
+    return {"type": "expand_node", **base}
+
+
+def compile_pending(root: Path, limit: int = 100) -> dict[str, Any]:
+    config = load_config(root)
+    if int(config["schema_version"]) < SCHEMA_VERSION:
+        raise KBError("Repository must be migrated before compile")
+    topics = load_index(root, "topics", {"topics": {}})
+    processed_jobs: list[dict[str, Any]] = []
+    queued_jobs = [
+        (path, read_json(path))
+        for path in (root / ".kb" / "compile-queue" / "pending").glob("*.json")
+    ]
+    queued_jobs.sort(key=lambda item: (int(item[1].get("ingest_sequence", 0)), item[0].name))
+    for job_path, job in queued_jobs[:limit]:
+        event_path = root / "01_Raw" / "events" / f"{job['event_key']}.json"
+        try:
+            event = read_json(event_path)
+            created = []
+            skipped = []
+            if event.get("event_type") in {"deleted", "permission_changed"}:
+                governance_type = "delete" if event["event_type"] == "deleted" else "change_acl"
+                governance = {
+                    "type": governance_type,
+                    "title": str(event.get("title") or event["source_id"]),
+                    "summary": f"Source emitted a {event['event_type']} event.",
+                    "evidence": [str(event["event_id"])],
+                    "permission_scope": source_permission_scope(event),
+                    "source_type": event["source_type"],
+                    "source_id": event["source_id"],
+                }
+                created.append(
+                    create_proposal(
+                        root,
+                        config,
+                        governance,
+                        {"origin_type": "compile", "event_key": job["event_key"], "topic_key": "source-governance"},
+                    )
+                )
+            for candidate in event.get("knowledge_candidates", []):
+                topic_key = str(candidate["topic_key"])
+                previous = topics["topics"].get(topic_key)
+                update = candidate_update(candidate, event, previous)
+                if update is None:
+                    skipped.append({"topic_key": topic_key, "reason": "ephemeral_task"})
+                    continue
+                proposal = create_proposal(
+                    root,
+                    config,
+                    update,
+                    {"origin_type": "compile", "event_key": job["event_key"], "topic_key": topic_key},
+                )
+                created.append(proposal)
+                content_proposal_id = proposal["proposal_id"]
+                if update["type"] == "add_source" and previous:
+                    content_proposal_id = previous.get("latest_proposal_id", content_proposal_id)
+                topics["topics"][topic_key] = {
+                    "memory_type": candidate["memory_type"],
+                    "content_hash": stable_hash(
+                        {"title": candidate["title"], "summary": candidate["summary"]}, 64
+                    ),
+                    "latest_proposal_id": content_proposal_id,
+                    "latest_event_key": job["event_key"],
+                    "updated_at": utc_now(),
+                }
+            job.update({"status": "processed", "processed_at": utc_now(), "proposals": created, "skipped": skipped})
+            destination = root / ".kb" / "compile-queue" / "processed" / job_path.name
+            write_json(destination, job)
+            job_path.unlink()
+            processed_jobs.append({"job_id": job["job_id"], "proposals": created, "skipped": skipped})
+        except (KBError, KeyError, TypeError) as exc:
+            job.update({"status": "failed", "failed_at": utc_now(), "error": str(exc)})
+            write_json(root / ".kb" / "compile-queue" / "failed" / job_path.name, job)
+            job_path.unlink()
+            processed_jobs.append({"job_id": job.get("job_id", job_path.stem), "error": str(exc)})
+    save_index(root, "topics", topics)
+    return {"status": "processed", "jobs": processed_jobs, "count": len(processed_jobs)}
+
+
+def updates_from_learning_signals(outcome: dict[str, Any]) -> list[dict[str, Any]]:
+    mapping = {
+        "correction": "rewrite_fact",
+        "successful_pattern": "new_node",
+        "stale_claim": "mark_stale",
+        "conflict": "resolve_conflict",
+        "missing_knowledge": "research_gap",
+    }
+    updates = []
+    for signal in outcome.get("learning_signals", []):
+        update = dict(signal)
+        signal_type = str(update.pop("signal_type", ""))
+        update["type"] = mapping.get(signal_type, signal_type)
+        updates.append(update)
+    return updates
+
+
 def submit_outcome(root: Path, outcome: dict[str, Any]) -> dict[str, Any]:
     config = load_config(root)
     for key in ("trace_id", "agent_id", "task_id", "tenant_id", "principal", "outcome_summary"):
@@ -329,30 +663,32 @@ def submit_outcome(root: Path, outcome: dict[str, Any]) -> dict[str, Any]:
     if not trace_path.exists():
         raise KBError(f"Unknown trace_id: {outcome['trace_id']}")
 
-    outcome_id = str(outcome.get("outcome_id") or f"outcome_{uuid.uuid4().hex}")
+    outcome_id = str(outcome.get("outcome_id") or f"outcome_{stable_hash(outcome)}")
     saved_outcome = dict(outcome)
     saved_outcome["outcome_id"] = outcome_id
-    saved_outcome.setdefault("created_at", utc_now())
-    write_json(root / ".kb" / "outcomes" / f"{outcome_id}.json", saved_outcome)
+    outcome_path = root / ".kb" / "outcomes" / f"{outcome_id}.json"
+    if outcome_path.exists():
+        saved_outcome = read_json(outcome_path)
+    else:
+        saved_outcome.setdefault("created_at", utc_now())
+        write_json(outcome_path, saved_outcome)
 
     proposals = []
-    for update in outcome.get("suggested_updates", []):
-        decision, reason = proposal_decision(update)
-        proposal_id = f"prop_{uuid.uuid4().hex}"
-        proposal = {
-            "proposal_id": proposal_id,
-            "created_at": utc_now(),
-            "status": "pending" if decision not in {"blocked"} else "blocked",
-            "decision": decision,
-            "reason": reason,
-            "tenant_id": config["tenant_id"],
-            "trace_id": outcome["trace_id"],
-            "outcome_id": outcome_id,
-            "principal": outcome["principal"],
-            "update": update,
-        }
-        write_json(root / "04_Promote" / "proposals" / f"{proposal_id}.json", proposal)
-        proposals.append({"proposal_id": proposal_id, "decision": decision, "status": proposal["status"]})
+    all_updates = list(outcome.get("suggested_updates", [])) + updates_from_learning_signals(outcome)
+    for update in all_updates:
+        proposals.append(
+            create_proposal(
+                root,
+                config,
+                update,
+                {
+                    "origin_type": "outcome",
+                    "trace_id": outcome["trace_id"],
+                    "outcome_id": outcome_id,
+                    "principal": outcome["principal"],
+                },
+            )
+        )
     return {"status": "accepted", "outcome_id": outcome_id, "update_proposals": proposals}
 
 
@@ -420,6 +756,39 @@ def promote_proposal(root: Path, proposal_id: str, action: str, reviewer: str) -
     }
 
 
+def status_kb(root: Path) -> dict[str, Any]:
+    config = load_config(root)
+    queue_root = root / ".kb" / "compile-queue"
+    queue = {
+        state: len(list((queue_root / state).glob("*.json")))
+        for state in ("pending", "processed", "failed")
+    }
+    gaps = [read_json(path) for path in (root / ".kb" / "gaps").glob("*.json")]
+    gaps.sort(key=lambda item: (-int(item.get("count", 0)), str(item.get("question", ""))))
+    topics = load_index(root, "topics", {"topics": {}})
+    usage = load_index(root, "usage", {"documents": {}, "queries": 0})
+    proposal_status: dict[str, int] = {}
+    for proposal in list_proposals(root):
+        status = str(proposal.get("status", "unknown"))
+        proposal_status[status] = proposal_status.get(status, 0) + 1
+    return {
+        "schema_version": config["schema_version"],
+        "profile": config["profile"],
+        "tenant_id": config["tenant_id"],
+        "compile_queue": queue,
+        "topics": len(topics.get("topics", {})),
+        "queries": int(usage.get("queries", 0)),
+        "knowledge_gaps": len(gaps),
+        "top_gaps": gaps[:5],
+        "proposals": proposal_status,
+    }
+
+
+def evolve_kb(root: Path, limit: int = 100) -> dict[str, Any]:
+    compiled = compile_pending(root, limit)
+    return {"compiled": compiled, "status": status_kb(root), "lint": lint_kb(root)}
+
+
 def lint_kb(root: Path) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -427,6 +796,11 @@ def lint_kb(root: Path) -> dict[str, Any]:
         config = load_config(root)
     except KBError as exc:
         return {"ok": False, "errors": [str(exc)], "warnings": [], "counts": {}}
+
+    if int(config["schema_version"]) != SCHEMA_VERSION:
+        errors.append(
+            f"Unsupported schema_version {config['schema_version']}; run migrate to reach {SCHEMA_VERSION}"
+        )
 
     for relative in KB_DIRS:
         if not (root / relative).exists():
@@ -465,9 +839,25 @@ def lint_kb(root: Path) -> dict[str, Any]:
         except KBError as exc:
             errors.append(str(exc))
 
+    queue_count = 0
+    for state in ("pending", "processed", "failed"):
+        for path in (root / ".kb" / "compile-queue" / state).glob("*.json"):
+            queue_count += 1
+            try:
+                job = read_json(path)
+                if job.get("status") != state:
+                    errors.append(f"Compile job status/path mismatch: {path.relative_to(root)}")
+            except KBError as exc:
+                errors.append(str(exc))
+
     return {
         "ok": not errors,
         "errors": errors,
         "warnings": warnings,
-        "counts": {"raw_events": raw_count, "wiki_nodes": len(wiki_paths), "proposals": proposal_count},
+        "counts": {
+            "raw_events": raw_count,
+            "wiki_nodes": len(wiki_paths),
+            "proposals": proposal_count,
+            "compile_jobs": queue_count,
+        },
     }

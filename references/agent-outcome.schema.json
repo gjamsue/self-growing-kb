@@ -29,6 +29,23 @@
         },
         "additionalProperties": true
       }
+    },
+    "learning_signals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["signal_type", "title", "summary", "evidence", "permission_scope"],
+        "properties": {
+          "signal_type": {
+            "enum": ["correction", "successful_pattern", "stale_claim", "conflict", "missing_knowledge"]
+          },
+          "title": {"type": "string"},
+          "summary": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}},
+          "permission_scope": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
     }
   },
   "additionalProperties": true

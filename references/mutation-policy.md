@@ -9,6 +9,15 @@ All Agent-originated knowledge changes are proposals first.
 | `review_required` | Rewrite fact, resolve conflict, delete, ACL or policy change, durable judgment | Require an identified human reviewer |
 | `blocked` | No evidence, unknown permission, cross-repository movement | Resolve the blocking condition and create a new proposal |
 
+## Memory classes
+
+| Class | Incremental behavior |
+|---|---|
+| `fact` | One current value per topic key; changed content requires supersession review |
+| `instruction` | One current rule per topic key; changed content requires supersession review |
+| `event` | Append as history; do not supersede prior events |
+| `task` | Ephemeral by default; skip during durable compilation |
+
 ## Invariants
 
 - Require at least one evidence reference for every mutation.
@@ -17,6 +26,7 @@ All Agent-originated knowledge changes are proposals first.
 - Never silently overwrite an existing Wiki node.
 - Never expand visibility beyond the intersection allowed by supporting sources.
 - Never transfer personal and work content through the ordinary Promote path.
+- Never treat newer as automatically truer. Source version establishes order, while evidence and review establish authority.
 
 ## Cross-repository promotion
 

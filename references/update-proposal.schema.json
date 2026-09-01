@@ -3,14 +3,17 @@
   "$id": "https://example.invalid/self-growing-kb/update-proposal.schema.json",
   "title": "Knowledge Update Proposal",
   "type": "object",
-  "required": ["proposal_id", "status", "decision", "tenant_id", "trace_id", "outcome_id", "update"],
+  "required": ["proposal_id", "status", "decision", "tenant_id", "origin_type", "update"],
   "properties": {
     "proposal_id": {"type": "string", "pattern": "^prop_"},
     "status": {"enum": ["pending", "blocked", "approved", "rejected"]},
     "decision": {"enum": ["auto_commit", "draft", "review_required", "blocked"]},
     "tenant_id": {"type": "string"},
+    "origin_type": {"enum": ["compile", "outcome"]},
     "trace_id": {"type": "string"},
     "outcome_id": {"type": "string"},
+    "event_key": {"type": "string"},
+    "topic_key": {"type": "string"},
     "update": {"type": "object"}
   },
   "additionalProperties": true

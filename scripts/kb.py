@@ -10,13 +10,17 @@ from pathlib import Path
 
 from kb_core import (
     KBError,
+    compile_pending,
+    evolve_kb,
     ingest_event,
     init_kb,
     lint_kb,
     list_proposals,
+    migrate_kb,
     promote_proposal,
     query_kb,
     read_json,
+    status_kb,
     submit_outcome,
 )
 
@@ -33,6 +37,20 @@ def parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest", help="Ingest a Normalized Raw Event JSON file")
     ingest.add_argument("root", type=Path)
     ingest.add_argument("event", type=Path)
+
+    migrate = sub.add_parser("migrate", help="Upgrade a knowledge repository schema in place")
+    migrate.add_argument("root", type=Path)
+
+    compile_command = sub.add_parser("compile", help="Compile pending Raw Events into proposals")
+    compile_command.add_argument("root", type=Path)
+    compile_command.add_argument("--limit", type=int, default=100)
+
+    evolve = sub.add_parser("evolve", help="Process incremental updates and report repository health")
+    evolve.add_argument("root", type=Path)
+    evolve.add_argument("--limit", type=int, default=100)
+
+    status = sub.add_parser("status", help="Show queue, gaps, usage, and proposal status")
+    status.add_argument("root", type=Path)
 
     query = sub.add_parser("query", help="Search Wiki and permitted Raw evidence")
     query.add_argument("root", type=Path)
@@ -65,6 +83,16 @@ def run(args: argparse.Namespace) -> object:
         return init_kb(args.root.resolve(), args.profile, args.tenant_id)
     if args.command == "ingest":
         return ingest_event(args.root.resolve(), read_json(args.event.resolve()))
+    if args.command == "migrate":
+        return migrate_kb(args.root.resolve())
+    if args.command in {"compile", "evolve"} and not 1 <= args.limit <= 10000:
+        raise KBError("limit must be between 1 and 10000")
+    if args.command == "compile":
+        return compile_pending(args.root.resolve(), args.limit)
+    if args.command == "evolve":
+        return evolve_kb(args.root.resolve(), args.limit)
+    if args.command == "status":
+        return status_kb(args.root.resolve())
     if args.command == "query":
         if args.limit < 1 or args.limit > 100:
             raise KBError("limit must be between 1 and 100")

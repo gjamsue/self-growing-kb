@@ -26,21 +26,24 @@ Read [protocol.md](references/protocol.md) for command contracts and repository 
 ## Execute the workflow
 
 1. Initialize an empty repository with `init` only when the user asks to create a knowledge repository.
-2. Convert hydrated source material to a Normalized Raw Event and call `ingest`. Never write crawled content directly to Wiki.
-3. Call `query` with an explicit principal. Return the answer package and preserve its `trace_id`.
-4. After a meaningful task, call `outcome` with the trace, claims, decisions, artifacts, and suggested updates.
-5. Let `outcome` classify every suggested update as `auto_commit`, `draft`, `review_required`, or `blocked`.
-6. Use `promote` only after the policy permits it. Create drafts and audit records; never silently overwrite an established Wiki page.
-7. Run `lint` after mutations and before committing changes.
+2. Convert hydrated source material to a Normalized Raw Event and call `ingest`. Include typed `knowledge_candidates` when hydration can extract them. Never write crawled content directly to Wiki.
+3. Run `evolve` at a checkpoint, after an idle batch, or after connector synchronization. It processes only pending event deltas and emits idempotent proposals.
+4. Call `query` with an explicit principal. Return the answer package and preserve its `trace_id`; query automatically records usage and repeated gaps.
+5. After a meaningful task, call `outcome` with the trace and any correction, successful-pattern, stale, conflict, or missing-knowledge signals.
+6. Let compile and outcome processing classify updates as `auto_commit`, `draft`, `review_required`, or `blocked`.
+7. Use `promote` only after the policy permits it. Create drafts and audit records; never silently overwrite an established Wiki page.
+8. Run `lint` after mutations and before committing changes. Use `status` to inspect queue health, gaps, usage, topics, and proposals.
 
 ## Preserve evidence and permissions
 
 - Require `tenant_id`, source identity, source version, ACL, hydration metadata, and evidence boundaries for every Raw Event.
 - Treat Raw Events as append-only. Represent deletion and permission changes as new events.
+- Preserve source-version chains and content fingerprints. Connector cursors belong to the connector; the core consumes only normalized deltas.
 - Require a principal for every query and filter Raw evidence before scoring it.
 - Keep claims linked to source IDs or Wiki nodes. Mark unsupported conclusions as gaps.
 - Never expand access through derived content. A Wiki node may be as restrictive as its sources, never less restrictive.
 - Never move content between personal and work repositories automatically.
+- Do not ingest every conversation turn. Batch at meaningful checkpoints and replay safely through deterministic identifiers.
 
 ## Apply mutation rules
 
@@ -62,5 +65,7 @@ Run:
 python3 <skill-dir>/scripts/kb.py lint <kb-root>
 python3 <skill-dir>/scripts/test_kb.py
 ```
+
+Read [self-evolution-design.md](references/self-evolution-design.md) when changing incremental ingestion, memory classes, deduplication, or learning behavior.
 
 Do not claim that semantic embeddings, remote connectors, Git synchronization, or a background service exist unless those components have been separately configured.

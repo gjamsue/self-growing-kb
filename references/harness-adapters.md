@@ -16,7 +16,7 @@ Install the instructions using the supported skill or extension mechanism. Keep 
 
 ## OpenCode and generic harnesses
 
-Reference `SKILL.md` from the harness instruction file and allow execution of `python3 scripts/kb.py`. If the harness supports MCP, wrap the seven CLI operations without changing their payloads.
+Reference `SKILL.md` from the harness instruction file and allow execution of `python3 scripts/kb.py`. If the harness supports MCP, wrap the CLI operations without changing their payloads.
 
 ## Future MCP tool mapping
 
@@ -24,6 +24,10 @@ Reference `SKILL.md` from the harness instruction file and allow execution of `p
 |---|---|
 | `kb_init` | `init` |
 | `kb_ingest` | `ingest` |
+| `kb_migrate` | `migrate` |
+| `kb_compile` | `compile` |
+| `kb_evolve` | `evolve` |
+| `kb_status` | `status` |
 | `kb_query` | `query` |
 | `kb_submit_outcome` | `outcome` |
 | `kb_list_proposals` | `proposals` |

@@ -23,5 +23,16 @@
   "evidence_boundary": {
     "proves": ["The source contained this text at version 1."],
     "does_not_prove": ["The source claim is correct."]
-  }
+  },
+  "knowledge_candidates": [
+    {
+      "memory_type": "fact",
+      "topic_key": "example/source-fact",
+      "title": "Example source fact",
+      "summary": "A reusable claim extracted during hydration.",
+      "permission_scope": "user-example",
+      "confidence": "medium",
+      "evidence": ["evt_example_001"]
+    }
+  ]
 }
