@@ -374,6 +374,7 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertEqual(second["superseded_revision_id"], first_revision)
         self.assertEqual(query_kb(self.root, "YesterdayOnly", "alice", 8, False)["evidence"], [])
         historical = query_kb(self.root, "YesterdayOnly", "alice", 8, False, as_of="2026-08-31T12:00:00Z")
+        self.assertEqual(historical["as_of"], "2026-08-31T12:00:00Z")
         self.assertEqual(historical["evidence"][0]["revision_id"], first_revision)
         self.assertTrue(query_kb(self.root, "TodayOnly", "alice", 8, False)["evidence"])
 

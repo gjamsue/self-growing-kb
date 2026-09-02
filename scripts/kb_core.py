@@ -672,6 +672,8 @@ def query_kb(
         "trace_id": trace_id,
         "question": question,
         "principal": principal,
+        "as_of": trace["as_of"],
+        "include_history": include_history,
         "confidence": "medium" if selected else "low",
         "evidence": [
             {
