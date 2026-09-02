@@ -398,6 +398,8 @@ def event_key(event: dict[str, Any]) -> str:
 
 
 def event_content_hash(event: dict[str, Any]) -> str:
+    hydration = dict(event.get("hydration") or {})
+    hydration.pop("hydrated_at", None)
     content = {
         key: event.get(key)
         for key in (
@@ -408,11 +410,11 @@ def event_content_hash(event: dict[str, Any]) -> str:
             "content_blocks",
             "attachments",
             "acl",
-            "hydration",
             "evidence_boundary",
             "knowledge_candidates",
         )
     }
+    content["hydration"] = hydration
     return stable_hash(content, 64)
 
 
@@ -461,7 +463,7 @@ def ingest_event(root: Path, event: dict[str, Any]) -> dict[str, Any]:
     record.setdefault("ingested_at", utc_now())
     if target.exists():
         existing = read_json(target)
-        if any(existing.get(field) != value for field, value in event.items()):
+        if event_content_hash(existing) != record["content_hash"]:
             raise KBError("Idempotency collision: source version already exists with different content")
         return {"status": "duplicate", "raw_event_id": event["event_id"], "idempotency_key": key}
     state = load_index(root, "state", {"next_ingest_sequence": 1})
@@ -474,7 +476,7 @@ def ingest_event(root: Path, event: dict[str, Any]) -> dict[str, Any]:
             "previous_event_key": previous_path.stem,
             "previous_version": previous_record.get("source_version"),
             "changed_fields": changed_event_fields(previous_record, record),
-            "content_unchanged": previous_record.get("content_hash") == record["content_hash"],
+            "content_unchanged": event_content_hash(previous_record) == record["content_hash"],
         }
     else:
         record["version_chain"] = {

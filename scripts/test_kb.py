@@ -186,6 +186,16 @@ class KnowledgeBaseTest(unittest.TestCase):
         with self.assertRaises(KBError):
             ingest_event(self.root, changed)
 
+    def test_ingest_ignores_hydration_time_for_idempotency(self) -> None:
+        original = event()
+        original["hydration"]["hydrated_at"] = "2026-09-02T00:00:00Z"
+        repeat = event()
+        repeat["hydration"]["hydrated_at"] = "2026-09-02T01:00:00Z"
+        first = ingest_event(self.root, original)
+        second = ingest_event(self.root, repeat)
+        self.assertEqual(first["status"], "accepted")
+        self.assertEqual(second["status"], "duplicate")
+
     def test_gmail_thread_adapter_uses_mailbox_identity_for_multiple_accounts(self) -> None:
         base_args = {
             "tenant_id": "tenant-test",
