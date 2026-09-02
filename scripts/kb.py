@@ -11,6 +11,7 @@ from pathlib import Path
 from kb_core import (
     KBError,
     bootstrap_pages,
+    bootstrap_raw_sources,
     compile_pending,
     evolve_kb,
     ingest_event,
@@ -45,6 +46,10 @@ def parser() -> argparse.ArgumentParser:
 
     bootstrap = sub.add_parser("bootstrap", help="Register existing active Wiki pages as revision 1")
     bootstrap.add_argument("root", type=Path)
+
+    bootstrap_raw = sub.add_parser("bootstrap-raw", help="Register legacy Raw Markdown as events")
+    bootstrap_raw.add_argument("root", type=Path)
+    bootstrap_raw.add_argument("--principal", required=True)
 
     compile_command = sub.add_parser("compile", help="Compile pending Raw Events into proposals")
     compile_command.add_argument("root", type=Path)
@@ -100,6 +105,8 @@ def run(args: argparse.Namespace) -> object:
         return migrate_kb(args.root.resolve())
     if args.command == "bootstrap":
         return bootstrap_pages(args.root.resolve())
+    if args.command == "bootstrap-raw":
+        return bootstrap_raw_sources(args.root.resolve(), args.principal)
     if args.command in {"compile", "evolve"} and not 1 <= args.limit <= 10000:
         raise KBError("limit must be between 1 and 10000")
     if args.command == "compile":

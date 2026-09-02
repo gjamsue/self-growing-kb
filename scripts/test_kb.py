@@ -13,6 +13,7 @@ from pathlib import Path
 from kb_core import (
     KBError,
     bootstrap_pages,
+    bootstrap_raw_sources,
     compile_pending,
     evolve_kb,
     ingest_event,
@@ -295,6 +296,17 @@ class KnowledgeBaseTest(unittest.TestCase):
         second = bootstrap_pages(self.root)
         self.assertEqual(second["drifted"], ["existing"])
         self.assertFalse(lint_kb(self.root)["ok"])
+
+    def test_bootstrap_legacy_raw_markdown_is_idempotent(self) -> None:
+        source = self.root / "01_Raw/source-legacy.md"
+        source.write_text("---\nid: source-legacy\n---\n\n# Legacy evidence\n\nOriginal body.\n", encoding="utf-8")
+        first = bootstrap_raw_sources(self.root, "alice")
+        second = bootstrap_raw_sources(self.root, "alice")
+        self.assertEqual(first["accepted"], ["source-legacy"])
+        self.assertEqual(second["duplicates"], ["source-legacy"])
+        self.assertEqual(evolve_kb(self.root)["compiled"]["count"], 1)
+        result = query_kb(self.root, "Original body", "alice", 8, True)
+        self.assertEqual(result["evidence"][0]["kind"], "raw")
 
     def test_query_uses_latest_raw_version_and_hides_deleted_source(self) -> None:
         first = event()

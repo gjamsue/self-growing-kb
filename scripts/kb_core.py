@@ -324,6 +324,43 @@ def bootstrap_pages(root: Path) -> dict[str, Any]:
     return {"status": "bootstrapped", "created": created, "unchanged": unchanged, "drifted": drifted}
 
 
+def bootstrap_raw_sources(root: Path, principal: str) -> dict[str, Any]:
+    config = load_config(root)
+    if int(config["schema_version"]) != SCHEMA_VERSION:
+        raise KBError("Repository must be migrated before Raw bootstrap")
+    if not principal.strip():
+        raise KBError("principal is required")
+    accepted = []
+    duplicates = []
+    for path in sorted((root / "01_Raw").glob("*.md")):
+        markdown = path.read_text(encoding="utf-8")
+        relative_path = str(path.relative_to(root))
+        source_id = frontmatter_value(markdown, "id") or path.stem
+        content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        event = {
+            "event_id": f"legacy_{stable_hash({'tenant': config['tenant_id'], 'path': relative_path, 'hash': content_hash})}",
+            "event_type": "created",
+            "tenant_id": config["tenant_id"],
+            "source_type": "legacy_markdown",
+            "source_id": source_id,
+            "source_version": f"bootstrap-{content_hash[:16]}",
+            "source_url": relative_path,
+            "title": extract_title(markdown, source_id),
+            "body": markdown,
+            "acl": [{"principal_type": "user", "principal_id": principal, "permission": "read"}],
+            "hydration": {"method": "legacy_markdown_bootstrap", "quality": "original"},
+            "evidence_boundary": {
+                "proves": ["The legacy Markdown source contained this content at bootstrap."],
+                "does_not_prove": ["Every claim in the source is currently true."],
+            },
+            "knowledge_candidates": [],
+        }
+        result = ingest_event(root, event)
+        destination = accepted if result["status"] == "accepted" else duplicates
+        destination.append(source_id)
+    return {"status": "bootstrapped", "accepted": accepted, "duplicates": duplicates}
+
+
 def validate_event(event: dict[str, Any], tenant_id: str) -> None:
     missing = [key for key in REQUIRED_EVENT_FIELDS if key not in event]
     if missing:

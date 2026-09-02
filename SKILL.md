@@ -26,7 +26,7 @@ Read [protocol.md](references/protocol.md) for command contracts and repository 
 ## Execute the workflow
 
 1. Initialize an empty repository with `init` only when the user asks to create a knowledge repository.
-2. After migrating a repository that already contains Wiki Markdown, run `bootstrap` once. Registered revisions become the authority for query and direct untracked edits become lint errors.
+2. After migrating a repository that already contains Wiki Markdown, run `bootstrap` once. If it also has legacy `01_Raw/*.md` files, run `bootstrap-raw --principal <owner>` to register them as immutable Raw Events. Both operations are replay-safe.
 3. Convert hydrated source material to a Normalized Raw Event and call `ingest`. Include typed `knowledge_candidates` when hydration can extract them. Never write crawled content directly to Wiki.
 4. Run `evolve` at a checkpoint, after an idle batch, or after connector synchronization. It processes only pending event deltas and emits idempotent proposals.
 5. Call `query` with an explicit principal. By default it searches only active page revisions and each source's latest Raw Event. Use `--as-of` or `--include-history` only for temporal or audit questions.

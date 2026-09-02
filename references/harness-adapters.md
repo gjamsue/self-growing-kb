@@ -26,6 +26,7 @@ Reference `SKILL.md` from the harness instruction file and allow execution of `p
 | `kb_ingest` | `ingest` |
 | `kb_migrate` | `migrate` |
 | `kb_bootstrap` | `bootstrap` |
+| `kb_bootstrap_raw` | `bootstrap-raw` |
 | `kb_compile` | `compile` |
 | `kb_evolve` | `evolve` |
 | `kb_status` | `status` |

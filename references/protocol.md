@@ -59,6 +59,14 @@ python3 scripts/kb.py bootstrap /path/to/wiki
 
 Bootstrap creates revision 1 for active Wiki files outside `_Drafts`. Replaying it is safe; changed registered files are reported as drift rather than silently accepted.
 
+Register legacy Markdown evidence that predates the Raw Event protocol:
+
+```bash
+python3 scripts/kb.py bootstrap-raw /path/to/wiki --principal user-123
+```
+
+Raw bootstrap converts each `01_Raw/*.md` file into a deterministic `legacy_markdown` event with an owner-only ACL. It preserves the original file, is idempotent, and queues the event for normal incremental compilation.
+
 ### Compile and evolve
 
 ```bash
