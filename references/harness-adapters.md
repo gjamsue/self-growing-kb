@@ -6,9 +6,13 @@ Keep the CLI and repository protocol authoritative. Harness adapters should only
 
 Install the `self-growing-kb` folder as a Skill or bundle it into a Codex plugin. Invoke `scripts/kb.py` for deterministic operations. Add an MCP wrapper only when remote or long-running access is needed.
 
+For a repository available on the local filesystem, Codex should treat the local checkout as authoritative for queries, proposals, promotions, and connector refreshes. Use OS scheduling such as `launchd`, `cron`, CI, or a long-running worker for periodic refresh; do not rely on the chat session staying open.
+
 ## Claude Code
 
 Expose the same `SKILL.md` under the harness's supported skills directory. Translate tool names in examples to shell execution. Keep `kb.py` unchanged.
+
+For Claude Code, keep `self-growing-kb` as the portable behavior layer and point it at the same local work wiki checkout. Do not fork the protocol for Claude-specific state; only adapt how shell commands are invoked.
 
 ## Gemini CLI
 

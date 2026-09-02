@@ -21,7 +21,7 @@ Run the portable CLI with:
 python3 <skill-dir>/scripts/kb.py <command> <kb-root> [options]
 ```
 
-Read [protocol.md](references/protocol.md) for command contracts and repository layout. Read [mutation-policy.md](references/mutation-policy.md) before applying a proposal. Read [harness-adapters.md](references/harness-adapters.md) only when installing or adapting this skill to another harness.
+Read [protocol.md](references/protocol.md) for command contracts and repository layout. Read [mutation-policy.md](references/mutation-policy.md) before applying a proposal. Read [deployment-topology.md](references/deployment-topology.md) when deciding personal-vs-work deployment, ChatGPT MCP integration, local scheduling, or multi-agent use. Read [harness-adapters.md](references/harness-adapters.md) only when installing or adapting this skill to another harness.
 
 ## Execute the workflow
 
