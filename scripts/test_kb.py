@@ -8,8 +8,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
+from gmail_thread_to_event import build_event
 from kb_core import (
     KBError,
     bootstrap_pages,
@@ -80,6 +82,38 @@ def page_markdown(title: str, body: str, page_id: str = "launch-scope-method") -
     )
 
 
+def gmail_thread(message_id: str = "msg-1", thread_id: str = "thread-1") -> dict:
+    return {
+        "id": thread_id,
+        "history_id": "123",
+        "messages": [
+            {
+                "id": message_id,
+                "thread_id": thread_id,
+                "label_ids": ["INBOX", "CATEGORY_PERSONAL"],
+                "history_id": "122",
+                "internal_date": "1788310315000",
+                "snippet": "Snippet fallback",
+                "payload": {
+                    "mime_type": "multipart/alternative",
+                    "headers": [
+                        {"name": "From", "value": "Teacher <teacher@example.com>"},
+                        {"name": "To", "value": "Parent <parent@example.com>"},
+                        {"name": "Subject", "value": "School transition"},
+                        {"name": "Date", "value": "Tue, 1 Sep 2026 17:51:55 -0700"},
+                    ],
+                    "parts": [
+                        {
+                            "mime_type": "text/plain",
+                            "body": {"content": "Alina understands the requested phrases."},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+
 class KnowledgeBaseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -104,6 +138,26 @@ class KnowledgeBaseTest(unittest.TestCase):
         changed["body"] = "Changed under the same source version"
         with self.assertRaises(KBError):
             ingest_event(self.root, changed)
+
+    def test_gmail_thread_adapter_uses_mailbox_identity_for_multiple_accounts(self) -> None:
+        base_args = {
+            "tenant_id": "tenant-test",
+            "principal": "alice",
+            "event_type": "updated",
+            "version_mode": "latest-message-id",
+            "source_url": None,
+            "hydrated_at": "2026-09-02T00:00:00Z",
+        }
+        personal = build_event(Namespace(**base_args, mailbox_account="personal@example.com"), gmail_thread())
+        work = build_event(Namespace(**base_args, mailbox_account="work@example.com"), gmail_thread())
+
+        self.assertEqual(personal["source_type"], "mail")
+        self.assertEqual(personal["source_version"], "message:msg-1")
+        self.assertIn("gmail/personal@example.com/thread/thread-1", personal["source_id"])
+        self.assertIn("gmail/work@example.com/thread/thread-1", work["source_id"])
+        self.assertNotEqual(personal["source_id"], work["source_id"])
+        self.assertEqual(personal["mailbox"]["account"], "personal@example.com")
+        self.assertIn("Alina understands the requested phrases.", personal["body"])
 
     def test_migrate_v1_repository_without_rewriting_data(self) -> None:
         config_path = self.root / "kb.json"

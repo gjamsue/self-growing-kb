@@ -43,6 +43,20 @@ The event identity is `tenant_id + source_type + source_id + source_version`. Re
 
 Ingest stores a normalized content hash, links the prior source version, records changed fields, updates the source index, and writes one durable compile job. `knowledge_candidates` are optional typed outputs from hydration; the core does not pretend to perform semantic extraction by itself.
 
+### Gmail thread adapter
+
+When a harness can read Gmail through a connector, convert each selected thread snapshot before ingesting it:
+
+```bash
+python3 scripts/gmail_thread_to_event.py thread.json \
+  --tenant-id personal-jian \
+  --principal user-123 \
+  --mailbox-account personal@example.com > raw-event.json
+python3 scripts/kb.py ingest /path/to/wiki raw-event.json
+```
+
+The adapter emits `source_type: mail` and a source id shaped as `gmail/<mailbox-account>/thread/<thread-id>`. This keeps multiple Gmail accounts separate even when providers reuse thread ids or the same conversation appears in more than one mailbox. The default `source_version` is the latest message id, which changes when a new message arrives but stays stable across read/unread label churn. Use `--version-mode thread-history-id` only when the connector intentionally treats Gmail metadata and labels as meaningful source changes.
+
 ### Migrate
 
 ```bash
