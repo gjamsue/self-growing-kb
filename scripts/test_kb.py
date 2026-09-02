@@ -35,6 +35,7 @@ from kb_core import (
     status_kb,
     submit_outcome,
 )
+from wiki_mcp_server import WikiMCP, handle_json_rpc, validate_readable_path
 
 
 def event(tenant: str = "tenant-test") -> dict:
@@ -380,6 +381,48 @@ class KnowledgeBaseTest(unittest.TestCase):
         status = status_kb(self.root)
         self.assertEqual(status["queries"], 2)
         self.assertEqual(status["knowledge_gaps"], 1)
+
+    def test_mcp_search_is_read_only_and_fetch_blocks_private_paths(self) -> None:
+        source_event = event()
+        source_event["knowledge_candidates"] = [candidate()]
+        ingest_event(self.root, source_event)
+        proposal_id = compile_pending(self.root)["jobs"][0]["proposals"][0]["proposal_id"]
+        promote_proposal(self.root, proposal_id, "approve", "alice")
+
+        server = WikiMCP(self.root, "alice")
+        result = server.call("wiki_search", {"question": "Search evidence", "limit": 5})
+        self.assertEqual(result["evidence"][0]["kind"], "wiki")
+        self.assertEqual(len(list((self.root / ".kb" / "traces").glob("*.json"))), 0)
+        self.assertEqual(status_kb(self.root)["queries"], 0)
+
+        fetched = server.call("wiki_fetch", {"kind": "wiki", "id": "search-evidence-rule"})
+        self.assertIn("Search evidence rule", fetched["markdown"])
+        proposals = server.call("wiki_list_proposals", {"status": "approved"})
+        self.assertEqual(proposals["count"], 1)
+        with self.assertRaises(KBError):
+            validate_readable_path(self.root, ".kb/private-credentials/gmail/token.json")
+
+    def test_mcp_json_rpc_tool_flow(self) -> None:
+        ingest_event(self.root, event())
+        server = WikiMCP(self.root, "alice")
+
+        initialized = handle_json_rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        self.assertEqual(initialized["result"]["serverInfo"]["name"], "self-growing-kb")
+        tools = handle_json_rpc(server, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = {item["name"] for item in tools["result"]["tools"]}
+        self.assertIn("search", names)
+        self.assertIn("fetch", names)
+        called = handle_json_rpc(
+            server,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "search", "arguments": {"query": "launch scope"}},
+            },
+        )
+        text = called["result"]["content"][0]["text"]
+        self.assertIn("Launch scope decision", text)
 
     def test_work_wiki_is_default_deny(self) -> None:
         restricted = self.root / "02_Wiki" / "restricted.md"

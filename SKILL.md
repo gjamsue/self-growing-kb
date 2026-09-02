@@ -21,7 +21,7 @@ Run the portable CLI with:
 python3 <skill-dir>/scripts/kb.py <command> <kb-root> [options]
 ```
 
-Read [protocol.md](references/protocol.md) for command contracts and repository layout. Read [mutation-policy.md](references/mutation-policy.md) before applying a proposal. Read [deployment-topology.md](references/deployment-topology.md) when deciding personal-vs-work deployment, ChatGPT MCP integration, local scheduling, or multi-agent use. Read [harness-adapters.md](references/harness-adapters.md) only when installing or adapting this skill to another harness.
+Read [protocol.md](references/protocol.md) for command contracts and repository layout. Read [mutation-policy.md](references/mutation-policy.md) before applying a proposal. Read [deployment-topology.md](references/deployment-topology.md) when deciding personal-vs-work deployment, ChatGPT MCP integration, local scheduling, or multi-agent use. Read [chatgpt-mcp.md](references/chatgpt-mcp.md) when exposing a read-only Wiki MCP endpoint to ChatGPT. Read [harness-adapters.md](references/harness-adapters.md) only when installing or adapting this skill to another harness.
 
 ## Execute the workflow
 
@@ -71,4 +71,4 @@ python3 <skill-dir>/scripts/test_kb.py
 
 Read [self-evolution-design.md](references/self-evolution-design.md) when changing incremental ingestion, memory classes, deduplication, or learning behavior.
 
-Do not claim that semantic embeddings, remote connectors, Git synchronization, or a background service exist unless those components have been separately configured.
+Do not claim that semantic embeddings, remote connectors, Git synchronization, ChatGPT MCP access, or a background service exist unless those components have been separately configured.
