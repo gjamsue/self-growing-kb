@@ -74,6 +74,17 @@ python3 scripts/gmail_api_sync.py sync \
 
 Each configured account has its own `account`, `token_file`, and optional query/body settings. Token and client-secret files must stay outside git. `body_mode: snippet` stores Gmail snippets for lower privacy exposure; `body_mode: plain` decodes plain-text message bodies when richer evidence is required.
 
+For a lighter personal setup, use Gmail IMAP with a per-account app password:
+
+```bash
+python3 scripts/gmail_imap_sync.py sync \
+  --kb-root /path/to/wiki \
+  --config /path/to/wiki/.kb/connectors/gmail-imap.json \
+  --evolve
+```
+
+This path does not require a Google Cloud OAuth client. It expects each Gmail account to enable 2-Step Verification and provide an app password through an ignored `credential_file`, `password_file`, or environment variable. Gmail IMAP supports `X-GM-RAW`, so a config can keep Gmail-style search such as `newer_than:7d -in:spam -in:trash -category:promotions`.
+
 ### Migrate
 
 ```bash

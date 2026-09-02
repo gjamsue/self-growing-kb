@@ -9,9 +9,11 @@ import sys
 import tempfile
 import unittest
 from argparse import Namespace
+from email.message import EmailMessage
 from pathlib import Path
 
 from gmail_api_sync import decode_base64url, normalize_thread
+from gmail_imap_sync import imap_search_args, normalize_imap_message
 from gmail_thread_to_event import build_event
 from kb_core import (
     KBError,
@@ -148,6 +150,17 @@ def gmail_rest_thread() -> dict:
     }
 
 
+def imap_email() -> bytes:
+    message = EmailMessage()
+    message["From"] = "Sender <sender@example.com>"
+    message["To"] = "Reader <reader@example.com>"
+    message["Subject"] = "IMAP thread"
+    message["Date"] = "Tue, 1 Sep 2026 17:51:55 -0700"
+    message["Message-ID"] = "<imap-msg-1@example.com>"
+    message.set_content("IMAP body text\n")
+    return bytes(message)
+
+
 class KnowledgeBaseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -227,6 +240,37 @@ class KnowledgeBaseTest(unittest.TestCase):
         )
         self.assertIn("Snippet text", snippet_event["body"])
         self.assertNotIn("API body text", snippet_event["body"])
+
+    def test_gmail_imap_message_normalization_and_search_args(self) -> None:
+        self.assertEqual(
+            imap_search_args({"gmail_search": "newer_than:7d -in:spam"}, {}),
+            ["X-GM-RAW", '"newer_than:7d -in:spam"'],
+        )
+        self.assertEqual(
+            imap_search_args({}, {"imap_search": "SINCE 01-Sep-2026 NOT DELETED"}),
+            ["SINCE", "01-Sep-2026", "NOT", "DELETED"],
+        )
+
+        normalized = normalize_imap_message(
+            imap_email(),
+            {"uid": "42", "x_gm_thrid": "thread-42", "x_gm_msgid": "msg-42"},
+            "plain",
+        )
+        event = build_event(
+            Namespace(
+                tenant_id="tenant-test",
+                principal="alice",
+                event_type="updated",
+                version_mode="latest-message-id",
+                source_url=None,
+                hydrated_at="2026-09-02T00:00:00Z",
+                mailbox_account="imap@example.com",
+            ),
+            {"id": "thread-42", "history_id": "42", "messages": [normalized]},
+        )
+        self.assertEqual(event["source_id"], "gmail/imap@example.com/thread/thread-42")
+        self.assertEqual(event["source_version"], "message:msg-42")
+        self.assertIn("IMAP body text", event["body"])
 
     def test_migrate_v1_repository_without_rewriting_data(self) -> None:
         config_path = self.root / "kb.json"

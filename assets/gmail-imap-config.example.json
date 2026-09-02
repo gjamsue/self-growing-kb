@@ -1,0 +1,26 @@
+{
+  "tenant_id": "personal-example",
+  "principal": "user-example",
+  "kb_cli": "../self-growing-kb/scripts/kb.py",
+  "host": "imap.gmail.com",
+  "port": 993,
+  "mailbox": "INBOX",
+  "gmail_search": "newer_than:7d -in:spam -in:trash -category:promotions",
+  "max_messages": 50,
+  "version_mode": "latest-message-id",
+  "body_mode": "snippet",
+  "accounts": [
+    {
+      "account": "personal@example.com",
+      "enabled": true,
+      "credential_file": ".kb/private-credentials/gmail/personal-imap.json"
+    },
+    {
+      "account": "work@example.com",
+      "enabled": false,
+      "password_file": ".kb/private-credentials/gmail/work-imap-app-password.txt",
+      "gmail_search": "newer_than:7d -in:spam -in:trash",
+      "body_mode": "plain"
+    }
+  ]
+}
