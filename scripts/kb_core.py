@@ -29,9 +29,11 @@ KB_DIRS = (
     ".kb/compile-queue/failed",
     ".kb/indexes",
     ".kb/gaps",
+    ".kb/pages",
+    ".kb/revisions",
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 REQUIRED_EVENT_FIELDS = (
     "event_id",
@@ -75,6 +77,8 @@ class SearchDocument:
     path: str
     sources: list[str]
     score: float = 0.0
+    revision_id: str | None = None
+    valid_from: str | None = None
 
 
 def utc_now() -> str:
@@ -94,8 +98,14 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def write_json(path: Path, value: Any) -> None:
+    write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+
+def write_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(value, encoding="utf-8")
+    temporary.replace(path)
 
 
 def stable_hash(value: Any, length: int = 24) -> str:
@@ -155,12 +165,163 @@ def migrate_kb(root: Path) -> dict[str, Any]:
         (root / relative).mkdir(parents=True, exist_ok=True)
     if current == SCHEMA_VERSION:
         return {"status": "already_current", "schema_version": current}
-    if current != 1:
+    if current not in {1, 2}:
         raise KBError(f"No migration path from schema {current}")
     config["schema_version"] = SCHEMA_VERSION
     config["migrated_at"] = utc_now()
     write_json(root / "kb.json", config)
     return {"status": "migrated", "from": current, "to": SCHEMA_VERSION}
+
+
+def frontmatter_value(markdown: str, key: str) -> str | None:
+    frontmatter = re.match(r"^---\n(.*?)\n---", markdown, flags=re.DOTALL)
+    if not frontmatter:
+        return None
+    match = re.search(rf"^{re.escape(key)}:\s*([^\n]+)$", frontmatter.group(1), flags=re.MULTILINE)
+    return match.group(1).strip().strip('"\'') if match else None
+
+
+def normalize_timestamp(value: str | None, fallback: str | None = None) -> str:
+    raw = value or fallback or utc_now()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return f"{raw}T00:00:00Z"
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise KBError(f"Invalid timestamp: {raw}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def page_registry_path(root: Path, page_id: str) -> Path:
+    validate_page_id(page_id)
+    return root / ".kb" / "pages" / f"{page_id}.json"
+
+
+def revision_path(root: Path, page_id: str, revision_id: str) -> Path:
+    validate_page_id(page_id)
+    if not re.fullmatch(r"(?:rev|rollback)_[a-z0-9]+", revision_id):
+        raise KBError(f"Invalid revision_id: {revision_id}")
+    return root / ".kb" / "revisions" / page_id / f"{revision_id}.json"
+
+
+def validate_page_id(page_id: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", page_id):
+        raise KBError(f"Invalid page_id: {page_id}")
+
+
+def load_page_registry(root: Path, page_id: str) -> dict[str, Any] | None:
+    path = page_registry_path(root, page_id)
+    return read_json(path) if path.exists() else None
+
+
+def revision_for_time(registry: dict[str, Any], as_of: str | None) -> str | None:
+    if as_of is None:
+        return registry.get("current_revision_id")
+    point = normalize_timestamp(as_of)
+    matches = []
+    for item in registry.get("history", []):
+        valid_from = normalize_timestamp(item.get("valid_from"))
+        valid_to = item.get("valid_to")
+        if valid_from <= point and (not valid_to or point < normalize_timestamp(valid_to)):
+            matches.append((valid_from, str(item.get("activated_at", "")), str(item["revision_id"])))
+    return max(matches)[2] if matches else None
+
+
+def create_revision_record(
+    root: Path,
+    page_id: str,
+    markdown: str,
+    *,
+    proposal_id: str,
+    evidence: list[str],
+    valid_from: str,
+    supersedes: str | None,
+    reviewer: str,
+    restored_from: str | None = None,
+) -> dict[str, Any]:
+    content_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    revision_id = f"rev_{stable_hash({'page_id': page_id, 'content_hash': content_hash, 'proposal_id': proposal_id})}"
+    record = {
+        "revision_id": revision_id,
+        "page_id": page_id,
+        "content_hash": content_hash,
+        "markdown": markdown,
+        "known_at": utc_now(),
+        "valid_from": normalize_timestamp(valid_from),
+        "supersedes": supersedes,
+        "proposal_id": proposal_id,
+        "reviewer": reviewer,
+        "evidence": evidence,
+        "restored_from": restored_from,
+    }
+    target = revision_path(root, page_id, revision_id)
+    if target.exists():
+        existing = read_json(target)
+        for key in ("revision_id", "page_id", "content_hash", "markdown", "proposal_id"):
+            if existing.get(key) != record.get(key):
+                raise KBError(f"Revision collision: {revision_id}")
+        return existing
+    write_json(target, record)
+    return record
+
+
+def bootstrap_pages(root: Path) -> dict[str, Any]:
+    config = load_config(root)
+    if int(config["schema_version"]) != SCHEMA_VERSION:
+        raise KBError("Repository must be migrated before bootstrap")
+    created = []
+    unchanged = []
+    drifted = []
+    wiki_root = root / "02_Wiki"
+    for path in sorted(wiki_root.rglob("*.md")):
+        if "_Drafts" in path.parts:
+            continue
+        markdown = path.read_text(encoding="utf-8")
+        page_id = frontmatter_value(markdown, "id") or path.stem
+        validate_page_id(page_id)
+        registry = load_page_registry(root, page_id)
+        if registry:
+            current = read_json(revision_path(root, page_id, registry["current_revision_id"]))
+            if current["content_hash"] == hashlib.sha256(markdown.encode("utf-8")).hexdigest():
+                unchanged.append(page_id)
+            else:
+                drifted.append(page_id)
+            continue
+        valid_from = normalize_timestamp(
+            frontmatter_value(markdown, "updated"), frontmatter_value(markdown, "created")
+        )
+        revision = create_revision_record(
+            root,
+            page_id,
+            markdown,
+            proposal_id="bootstrap",
+            evidence=re.findall(r"\[\[([^\]]+)\]\]", markdown),
+            valid_from=valid_from,
+            supersedes=None,
+            reviewer="bootstrap",
+        )
+        registry = {
+            "page_id": page_id,
+            "path": str(path.relative_to(root)),
+            "status": "active",
+            "current_revision_id": revision["revision_id"],
+            "topic_keys": [page_id],
+            "history": [
+                {
+                    "revision_id": revision["revision_id"],
+                    "status": "active",
+                    "valid_from": valid_from,
+                    "valid_to": None,
+                    "activated_at": revision["known_at"],
+                }
+            ],
+            "updated_at": revision["known_at"],
+        }
+        write_json(page_registry_path(root, page_id), registry)
+        created.append(page_id)
+    return {"status": "bootstrapped", "created": created, "unchanged": unchanged, "drifted": drifted}
 
 
 def validate_event(event: dict[str, Any], tenant_id: str) -> None:
@@ -204,6 +365,7 @@ def event_content_hash(event: dict[str, Any]) -> str:
         key: event.get(key)
         for key in (
             "event_type",
+            "effective_at",
             "title",
             "body",
             "content_blocks",
@@ -372,24 +534,69 @@ def wiki_principal_can_read(markdown: str, principal: str, profile: str) -> bool
     return principal in principals
 
 
-def iter_documents(root: Path, principal: str, include_raw: bool, profile: str) -> Iterable[SearchDocument]:
-    wiki_dir = root / "02_Wiki"
-    if wiki_dir.exists():
-        for path in sorted(wiki_dir.rglob("*.md")):
-            text = path.read_text(encoding="utf-8")
+def iter_documents(
+    root: Path,
+    principal: str,
+    include_raw: bool,
+    profile: str,
+    as_of: str | None = None,
+    include_history: bool = False,
+) -> Iterable[SearchDocument]:
+    for registry_path in sorted((root / ".kb" / "pages").glob("*.json")):
+        registry = read_json(registry_path)
+        if registry.get("status") != "active" and not include_history:
+            continue
+        revision_ids = (
+            [str(item["revision_id"]) for item in registry.get("history", [])]
+            if include_history
+            else [revision_for_time(registry, as_of)]
+        )
+        for revision_id in revision_ids:
+            if not revision_id:
+                continue
+            revision = read_json(revision_path(root, registry["page_id"], revision_id))
+            text = str(revision["markdown"])
             if not wiki_principal_can_read(text, principal, profile):
                 continue
+            identifier = registry["page_id"] if not include_history else f"{registry['page_id']}@{revision_id}"
             yield SearchDocument(
                 kind="wiki",
-                identifier=path.stem,
-                title=extract_title(text, path.stem),
+                identifier=identifier,
+                title=extract_title(text, registry["page_id"]),
                 text=text,
-                path=str(path.relative_to(root)),
-                sources=re.findall(r"\[\[([^\]]+)\]\]", text),
+                path=str(registry["path"]),
+                sources=list(revision.get("evidence", [])),
+                revision_id=revision_id,
+                valid_from=revision.get("valid_from"),
             )
     if include_raw:
-        for path in sorted((root / "01_Raw" / "events").glob("*.json")):
+        if include_history:
+            event_keys = [path.stem for path in sorted((root / "01_Raw" / "events").glob("*.json"))]
+        elif as_of:
+            point = normalize_timestamp(as_of)
+            latest_by_source: dict[str, tuple[str, int, str]] = {}
+            for path in sorted((root / "01_Raw" / "events").glob("*.json")):
+                event = read_json(path)
+                effective_at = normalize_timestamp(event.get("effective_at"), event.get("ingested_at"))
+                if effective_at > point:
+                    continue
+                source_key = f"{event.get('source_type')}:{event.get('source_id')}"
+                candidate = (effective_at, int(event.get("ingest_sequence", 0)), path.stem)
+                if source_key not in latest_by_source or candidate > latest_by_source[source_key]:
+                    latest_by_source[source_key] = candidate
+            event_keys = [item[2] for item in latest_by_source.values()]
+        else:
+            sources = load_index(root, "sources", {"sources": {}})
+            event_keys = [
+                str(item["latest_event_key"])
+                for item in sources.get("sources", {}).values()
+                if item.get("latest_event_key")
+            ]
+        for key in sorted(set(event_keys)):
+            path = root / "01_Raw" / "events" / f"{key}.json"
             event = read_json(path)
+            if event.get("event_type") == "deleted" and not include_history:
+                continue
             if not principal_can_read(event.get("acl", []), principal):
                 continue
             body = str(event.get("body", ""))
@@ -400,15 +607,26 @@ def iter_documents(root: Path, principal: str, include_raw: bool, profile: str) 
                 text=body,
                 path=str(path.relative_to(root)),
                 sources=[str(event.get("source_id", ""))],
+                valid_from=event.get("effective_at") or event.get("ingested_at"),
             )
 
 
-def query_kb(root: Path, question: str, principal: str, limit: int, include_raw: bool) -> dict[str, Any]:
+def query_kb(
+    root: Path,
+    question: str,
+    principal: str,
+    limit: int,
+    include_raw: bool,
+    as_of: str | None = None,
+    include_history: bool = False,
+) -> dict[str, Any]:
     config = load_config(root)
     if not principal.strip():
         raise KBError("principal is required")
     scored: list[SearchDocument] = []
-    for document in iter_documents(root, principal, include_raw, config["profile"]):
+    for document in iter_documents(
+        root, principal, include_raw, config["profile"], as_of=as_of, include_history=include_history
+    ):
         score = score_text(question, document.title, document.text)
         if score > 0:
             scored.append(SearchDocument(**{**document.__dict__, "score": score}))
@@ -422,6 +640,8 @@ def query_kb(root: Path, question: str, principal: str, limit: int, include_raw:
         "tenant_id": config["tenant_id"],
         "principal": principal,
         "question": question,
+        "as_of": normalize_timestamp(as_of) if as_of else None,
+        "include_history": include_history,
         "results": [document.identifier for document in selected],
         "gaps": gaps,
     }
@@ -462,6 +682,8 @@ def query_kb(root: Path, question: str, principal: str, limit: int, include_raw:
                 "score": item.score,
                 "excerpt": re.sub(r"\s+", " ", item.text).strip()[:320],
                 "sources": item.sources,
+                "revision_id": item.revision_id,
+                "valid_from": item.valid_from,
             }
             for item in selected
         ],
@@ -478,6 +700,13 @@ def proposal_decision(update: dict[str, Any]) -> tuple[str, str]:
         return "blocked", "Permission scope is unknown."
     if not evidence:
         return "blocked", "No evidence was supplied."
+    if update_type in {"rewrite_fact", "expand_node", "update_node"}:
+        if not update.get("page_id"):
+            return "blocked", "Existing-page updates require page_id."
+        if not update.get("expected_revision_id"):
+            return "blocked", "Existing-page updates require expected_revision_id."
+        if not update.get("replacement_markdown"):
+            return "blocked", "Existing-page updates require complete replacement_markdown."
     if update_type in HIGH_RISK_TYPES:
         return "review_required", "This change affects facts, access, deletion, conflict, or durable judgment."
     if update_type in AUTO_TYPES:
@@ -535,6 +764,7 @@ def source_permission_scope(event: dict[str, Any]) -> str:
 def candidate_update(candidate: dict[str, Any], event: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any] | None:
     memory_type = candidate["memory_type"]
     evidence = list(candidate.get("evidence") or [event["event_id"]])
+    page_id = str(candidate.get("page_id") or slugify(str(candidate["title"])))
     base = {
         "title": candidate["title"],
         "summary": candidate["summary"],
@@ -543,7 +773,12 @@ def candidate_update(candidate: dict[str, Any], event: dict[str, Any], previous:
         "topic_key": candidate["topic_key"],
         "memory_type": memory_type,
         "confidence": candidate.get("confidence", "unknown"),
+        "page_id": page_id,
+        "claim_key": str(candidate.get("claim_key") or candidate["topic_key"]),
+        "valid_from": normalize_timestamp(candidate.get("valid_from"), event.get("effective_at")),
     }
+    if candidate.get("replacement_markdown"):
+        base["replacement_markdown"] = str(candidate["replacement_markdown"])
     if memory_type == "task":
         return None
     if previous is None or memory_type == "event":
@@ -602,6 +837,10 @@ def compile_pending(root: Path, limit: int = 100) -> dict[str, Any]:
                 if update is None:
                     skipped.append({"topic_key": topic_key, "reason": "ephemeral_task"})
                     continue
+                registry = load_page_registry(root, update["page_id"])
+                update["expected_revision_id"] = registry.get("current_revision_id") if registry else None
+                if previous is None and registry and update["type"] == "new_node":
+                    update["type"] = "expand_node"
                 proposal = create_proposal(
                     root,
                     config,
@@ -619,6 +858,7 @@ def compile_pending(root: Path, limit: int = 100) -> dict[str, Any]:
                     ),
                     "latest_proposal_id": content_proposal_id,
                     "latest_event_key": job["event_key"],
+                    "page_id": update["page_id"],
                     "updated_at": utc_now(),
                 }
             job.update({"status": "processed", "processed_at": utc_now(), "proposals": created, "skipped": skipped})
@@ -704,7 +944,145 @@ def list_proposals(root: Path, status: str | None = None) -> list[dict[str, Any]
 
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug[:80] or f"draft-{uuid.uuid4().hex[:8]}"
+    return slug[:80] or f"page-{stable_hash(value, 12)}"
+
+
+def generated_page_markdown(page_id: str, update: dict[str, Any]) -> str:
+    title = str(update.get("title") or page_id)
+    scope = str(update.get("permission_scope") or "unknown")
+    visibility = "public" if scope == "public" else "restricted"
+    allowed = "[]" if visibility == "public" else f"[{scope}]"
+    evidence = update.get("evidence", [])
+    return (
+        "---\n"
+        f"id: {page_id}\n"
+        "type: wiki\n"
+        "status: active\n"
+        f"visibility: {visibility}\n"
+        f"allowed_principals: {allowed}\n"
+        f"created: {utc_now()[:10]}\n"
+        f"updated: {utc_now()[:10]}\n"
+        "---\n\n"
+        f"# {title}\n\n"
+        f"{update.get('summary', '')}\n\n"
+        "## Evidence\n\n"
+        + "\n".join(f"- {item}" for item in evidence)
+        + "\n"
+    )
+
+
+def validate_replacement_markdown(
+    root: Path, page_id: str, markdown: str, permission_scope: str
+) -> None:
+    declared_id = frontmatter_value(markdown, "id")
+    if declared_id != page_id:
+        raise KBError("replacement_markdown frontmatter id must match page_id")
+    if frontmatter_value(markdown, "status") not in {None, "active"}:
+        raise KBError("replacement_markdown status must be active")
+    if load_config(root)["profile"] != "work":
+        return
+    visibility = frontmatter_value(markdown, "visibility")
+    if permission_scope != "public" and visibility == "public":
+        raise KBError("replacement_markdown cannot widen restricted source visibility")
+    if permission_scope != "public":
+        allowed_raw = frontmatter_value(markdown, "allowed_principals") or ""
+        allowed = {
+            item.strip().strip('"\'')
+            for item in allowed_raw.strip("[]").split(",")
+            if item.strip()
+        }
+        if not allowed or not allowed.issubset({permission_scope}):
+            raise KBError("replacement_markdown allowed_principals exceed permission_scope")
+
+
+def activate_page_revision(
+    root: Path,
+    proposal: dict[str, Any],
+    reviewer: str,
+    restored_from: str | None = None,
+) -> dict[str, Any]:
+    update = proposal.get("update", {})
+    page_id = str(update.get("page_id") or slugify(str(update.get("title") or "Untitled")))
+    registry = load_page_registry(root, page_id)
+    actual_revision = registry.get("current_revision_id") if registry else None
+    expected_revision = update.get("expected_revision_id")
+    if actual_revision != expected_revision:
+        raise KBError(
+            f"Stale proposal for {page_id}: expected {expected_revision}, current is {actual_revision}"
+        )
+    markdown = update.get("replacement_markdown")
+    if not markdown:
+        if registry:
+            raise KBError("Updating an existing page requires replacement_markdown")
+        markdown = generated_page_markdown(page_id, update)
+    markdown = str(markdown)
+    if not re.search(r"^#\s+.+$", markdown, flags=re.MULTILINE):
+        raise KBError("replacement_markdown must contain an H1 heading")
+    validate_replacement_markdown(root, page_id, markdown, str(update.get("permission_scope")))
+    valid_from = normalize_timestamp(update.get("valid_from"))
+    if registry:
+        current_history = next(
+            item for item in registry["history"] if item["revision_id"] == actual_revision
+        )
+        if valid_from < normalize_timestamp(current_history["valid_from"]):
+            raise KBError("Backdated replacement requires explicit temporal reconciliation")
+    revision = create_revision_record(
+        root,
+        page_id,
+        markdown,
+        proposal_id=str(proposal["proposal_id"]),
+        evidence=list(update.get("evidence", [])),
+        valid_from=valid_from,
+        supersedes=actual_revision,
+        reviewer=reviewer,
+        restored_from=restored_from,
+    )
+    if registry:
+        history = list(registry["history"])
+        for item in history:
+            if item["revision_id"] == actual_revision:
+                item["status"] = "superseded"
+                item["valid_to"] = revision["valid_from"]
+                item["superseded_by"] = revision["revision_id"]
+        page_path = root / registry["path"]
+    else:
+        history = []
+        page_path = root / "02_Wiki" / f"{page_id}.md"
+        registry = {
+            "page_id": page_id,
+            "path": str(page_path.relative_to(root)),
+            "topic_keys": [],
+        }
+    history.append(
+        {
+            "revision_id": revision["revision_id"],
+            "status": "active",
+            "valid_from": revision["valid_from"],
+            "valid_to": None,
+            "activated_at": revision["known_at"],
+        }
+    )
+    topic_key = update.get("topic_key")
+    topic_keys = set(registry.get("topic_keys", []))
+    if topic_key:
+        topic_keys.add(str(topic_key))
+    registry.update(
+        {
+            "status": "active",
+            "current_revision_id": revision["revision_id"],
+            "topic_keys": sorted(topic_keys),
+            "history": history,
+            "updated_at": revision["known_at"],
+        }
+    )
+    write_text(page_path, markdown)
+    write_json(page_registry_path(root, page_id), registry)
+    return {
+        "page_id": page_id,
+        "page_path": str(page_path.relative_to(root)),
+        "revision_id": revision["revision_id"],
+        "superseded_revision_id": actual_revision,
+    }
 
 
 def promote_proposal(root: Path, proposal_id: str, action: str, reviewer: str) -> dict[str, Any]:
@@ -718,42 +1096,65 @@ def promote_proposal(root: Path, proposal_id: str, action: str, reviewer: str) -
     if proposal.get("decision") == "blocked" and action == "approve":
         raise KBError("Blocked proposals cannot be approved; resolve the blocking condition first")
 
+    materialized = None
+    update = proposal.get("update", {})
+    content_types = DRAFT_TYPES | {"rewrite_fact"}
+    if action == "approve" and update.get("type") in content_types:
+        materialized = activate_page_revision(root, proposal, reviewer)
+    if action == "approve" and update.get("type") == "delete" and update.get("page_id"):
+        registry = load_page_registry(root, str(update["page_id"]))
+        if registry:
+            registry["status"] = "inactive"
+            registry["updated_at"] = utc_now()
+            write_json(page_registry_path(root, registry["page_id"]), registry)
+
     proposal["status"] = "approved" if action == "approve" else "rejected"
     proposal["reviewed_at"] = utc_now()
     proposal["reviewer"] = reviewer
+    if materialized:
+        proposal["materialized"] = materialized
     destination_dir = root / "04_Promote" / ("approved" if action == "approve" else "rejected")
     write_json(destination_dir / path.name, proposal)
-
-    draft_path = None
-    update = proposal.get("update", {})
-    if action == "approve" and update.get("type") in DRAFT_TYPES:
-        title = str(update.get("title") or "Untitled knowledge draft")
-        draft_path = root / "02_Wiki" / "_Drafts" / f"{slugify(title)}--{proposal_id[-8:]}.md"
-        evidence = update.get("evidence", [])
-        draft_path.write_text(
-            "---\n"
-            f"id: {slugify(title)}\n"
-            "type: wiki-draft\n"
-            "status: draft\n"
-            "visibility: restricted\n"
-            f"allowed_principals: [{proposal['principal']}]\n"
-            f"proposal_id: {proposal_id}\n"
-            f"created: {utc_now()}\n"
-            "---\n\n"
-            f"# {title}\n\n"
-            f"{update.get('summary', '')}\n\n"
-            "## Evidence\n\n"
-            + "\n".join(f"- {item}" for item in evidence)
-            + "\n",
-            encoding="utf-8",
-        )
     path.unlink()
     return {
         "proposal_id": proposal_id,
         "status": proposal["status"],
         "audit_path": str((destination_dir / path.name).relative_to(root)),
-        "draft_path": str(draft_path.relative_to(root)) if draft_path else None,
+        **(materialized or {}),
     }
+
+
+def rollback_page(root: Path, page_id: str, revision_id: str, reviewer: str) -> dict[str, Any]:
+    registry = load_page_registry(root, page_id)
+    if not registry:
+        raise KBError(f"Unknown page_id: {page_id}")
+    target = read_json(revision_path(root, page_id, revision_id))
+    target_markdown = str(target["markdown"])
+    target_scope = "public" if frontmatter_value(target_markdown, "visibility") == "public" else None
+    if target_scope is None:
+        allowed_raw = frontmatter_value(target_markdown, "allowed_principals") or ""
+        target_scope = next(
+            (item.strip().strip('"\'') for item in allowed_raw.strip("[]").split(",") if item.strip()),
+            "rollback",
+        )
+    proposal_id = f"rollback_{stable_hash({'page_id': page_id, 'target': revision_id, 'current': registry['current_revision_id']})}"
+    proposal = {
+        "proposal_id": proposal_id,
+        "update": {
+            "type": "update_node",
+            "page_id": page_id,
+            "title": extract_title(str(target["markdown"]), page_id),
+            "replacement_markdown": target_markdown,
+            "evidence": target.get("evidence", []),
+            "permission_scope": target_scope,
+            "valid_from": utc_now(),
+            "expected_revision_id": registry["current_revision_id"],
+        },
+    }
+    result = activate_page_revision(root, proposal, reviewer, restored_from=revision_id)
+    audit = {**proposal, "status": "approved", "reviewer": reviewer, "reviewed_at": utc_now(), "materialized": result}
+    write_json(root / "04_Promote" / "approved" / f"{proposal_id}.json", audit)
+    return {"status": "rolled_back", **result, "restored_from": revision_id}
 
 
 def status_kb(root: Path) -> dict[str, Any]:
@@ -771,6 +1172,7 @@ def status_kb(root: Path) -> dict[str, Any]:
     for proposal in list_proposals(root):
         status = str(proposal.get("status", "unknown"))
         proposal_status[status] = proposal_status.get(status, 0) + 1
+    page_registries = [read_json(path) for path in (root / ".kb" / "pages").glob("*.json")]
     return {
         "schema_version": config["schema_version"],
         "profile": config["profile"],
@@ -781,6 +1183,12 @@ def status_kb(root: Path) -> dict[str, Any]:
         "knowledge_gaps": len(gaps),
         "top_gaps": gaps[:5],
         "proposals": proposal_status,
+        "pages": {
+            "total": len(page_registries),
+            "active": sum(1 for page in page_registries if page.get("status") == "active"),
+            "inactive": sum(1 for page in page_registries if page.get("status") != "active"),
+        },
+        "revisions": len(list((root / ".kb" / "revisions").glob("*/*.json"))),
     }
 
 
@@ -831,6 +1239,37 @@ def lint_kb(root: Path) -> dict[str, Any]:
     if broken_links:
         warnings.append("Unresolved wiki links: " + ", ".join(sorted(broken_links)))
 
+    page_count = 0
+    revision_count = 0
+    registered_paths: set[str] = set()
+    for path in sorted((root / ".kb" / "pages").glob("*.json")):
+        page_count += 1
+        try:
+            registry = read_json(path)
+            page_id = str(registry["page_id"])
+            if path.stem != page_id:
+                errors.append(f"Page registry filename mismatch: {path.relative_to(root)}")
+            registered_paths.add(str(registry["path"]))
+            current_id = str(registry["current_revision_id"])
+            current = read_json(revision_path(root, page_id, current_id))
+            page_path = root / str(registry["path"])
+            if not page_path.exists():
+                errors.append(f"Registered Wiki page is missing: {registry['path']}")
+            elif hashlib.sha256(page_path.read_bytes()).hexdigest() != current.get("content_hash"):
+                errors.append(f"Wiki page drifted from current revision: {registry['path']}")
+            active = [item for item in registry.get("history", []) if item.get("status") == "active"]
+            if len(active) != 1 or active[0].get("revision_id") != current_id:
+                errors.append(f"Page registry has an invalid current pointer: {page_id}")
+            for item in registry.get("history", []):
+                revision_count += 1
+                read_json(revision_path(root, page_id, str(item["revision_id"])))
+        except (KBError, KeyError) as exc:
+            errors.append(str(exc))
+    for path in wiki_paths:
+        relative = str(path.relative_to(root))
+        if "_Drafts" not in path.parts and relative not in registered_paths:
+            errors.append(f"Active Wiki page is not registered: {relative}")
+
     proposal_count = 0
     for path in (root / "04_Promote").rglob("*.json"):
         proposal_count += 1
@@ -859,5 +1298,7 @@ def lint_kb(root: Path) -> dict[str, Any]:
             "wiki_nodes": len(wiki_paths),
             "proposals": proposal_count,
             "compile_jobs": queue_count,
+            "registered_pages": page_count,
+            "revisions": revision_count,
         },
     }

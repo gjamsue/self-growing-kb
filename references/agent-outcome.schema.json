@@ -21,8 +21,12 @@
         "required": ["type", "title", "summary", "evidence", "permission_scope"],
         "properties": {
           "type": {"type": "string"},
+          "page_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
           "title": {"type": "string"},
           "summary": {"type": "string"},
+          "valid_from": {"type": "string"},
+          "expected_revision_id": {"type": ["string", "null"]},
+          "replacement_markdown": {"type": "string"},
           "evidence": {"type": "array", "items": {"type": "string"}},
           "permission_scope": {"type": "string"},
           "cross_repository": {"type": "boolean"}

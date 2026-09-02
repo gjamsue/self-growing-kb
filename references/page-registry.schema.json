@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/self-growing-kb/page-registry.schema.json",
+  "title": "Knowledge Page Registry",
+  "type": "object",
+  "required": ["page_id", "path", "status", "current_revision_id", "history"],
+  "properties": {
+    "page_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "path": {"type": "string"},
+    "status": {"enum": ["active", "inactive"]},
+    "current_revision_id": {"type": "string", "pattern": "^rev_"},
+    "topic_keys": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["revision_id", "status", "valid_from", "activated_at"],
+        "properties": {
+          "revision_id": {"type": "string", "pattern": "^rev_"},
+          "status": {"enum": ["active", "superseded"]},
+          "valid_from": {"type": "string"},
+          "valid_to": {"type": ["string", "null"]},
+          "activated_at": {"type": "string"},
+          "superseded_by": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

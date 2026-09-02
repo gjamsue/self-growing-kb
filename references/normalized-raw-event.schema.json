@@ -67,8 +67,12 @@
         "properties": {
           "memory_type": {"enum": ["fact", "event", "instruction", "task"]},
           "topic_key": {"type": "string", "minLength": 1},
+          "claim_key": {"type": "string", "minLength": 1},
+          "page_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
           "title": {"type": "string", "minLength": 1},
           "summary": {"type": "string", "minLength": 1},
+          "valid_from": {"type": "string"},
+          "replacement_markdown": {"type": "string"},
           "permission_scope": {"type": "string", "minLength": 1},
           "confidence": {"type": "string"},
           "evidence": {"type": "array", "items": {"type": "string"}}

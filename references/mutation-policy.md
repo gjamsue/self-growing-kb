@@ -24,6 +24,10 @@ All Agent-originated knowledge changes are proposals first.
 - Require `permission_scope` to be known.
 - Never approve a blocked proposal in place.
 - Never silently overwrite an existing Wiki node.
+- Preserve every approved page body as an immutable revision; status transitions live in the page registry.
+- Require `expected_revision_id` for an existing-page replacement.
+- Require full replacement content so a partial Agent summary cannot erase unmentioned knowledge.
+- Default query to active revisions and latest non-deleted source events.
 - Never expand visibility beyond the intersection allowed by supporting sources.
 - Never transfer personal and work content through the ordinary Promote path.
 - Never treat newer as automatically truer. Source version establishes order, while evidence and review establish authority.

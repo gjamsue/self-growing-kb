@@ -25,6 +25,7 @@ Reference `SKILL.md` from the harness instruction file and allow execution of `p
 | `kb_init` | `init` |
 | `kb_ingest` | `ingest` |
 | `kb_migrate` | `migrate` |
+| `kb_bootstrap` | `bootstrap` |
 | `kb_compile` | `compile` |
 | `kb_evolve` | `evolve` |
 | `kb_status` | `status` |
@@ -32,6 +33,7 @@ Reference `SKILL.md` from the harness instruction file and allow execution of `p
 | `kb_submit_outcome` | `outcome` |
 | `kb_list_proposals` | `proposals` |
 | `kb_promote` | `promote` |
+| `kb_rollback` | `rollback` |
 | `kb_lint` | `lint` |
 
 Do not put Git credentials, repository URLs, personal paths, or company identifiers inside the portable skill. Store those in each harness's local configuration.

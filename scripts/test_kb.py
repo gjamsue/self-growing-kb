@@ -12,6 +12,7 @@ from pathlib import Path
 
 from kb_core import (
     KBError,
+    bootstrap_pages,
     compile_pending,
     evolve_kb,
     ingest_event,
@@ -23,6 +24,7 @@ from kb_core import (
     proposal_decision,
     query_kb,
     read_json,
+    rollback_page,
     status_kb,
     submit_outcome,
 )
@@ -55,7 +57,26 @@ def candidate(memory_type: str = "fact", summary: str = "Search requires evidenc
         "summary": summary,
         "permission_scope": "alice",
         "confidence": "high",
+        "page_id": "search-evidence-rule",
+        "replacement_markdown": page_markdown(
+            "Search evidence rule", summary, "search-evidence-rule"
+        ),
     }
+
+
+def page_markdown(title: str, body: str, page_id: str = "launch-scope-method") -> str:
+    return (
+        "---\n"
+        f"id: {page_id}\n"
+        "type: wiki\n"
+        "status: active\n"
+        "visibility: restricted\n"
+        "allowed_principals: [alice]\n"
+        "created: 2026-08-31\n"
+        "updated: 2026-09-01\n"
+        "---\n\n"
+        f"# {title}\n\n{body}\n"
+    )
 
 
 class KnowledgeBaseTest(unittest.TestCase):
@@ -89,9 +110,19 @@ class KnowledgeBaseTest(unittest.TestCase):
         config["schema_version"] = 1
         config_path.write_text(json.dumps(config), encoding="utf-8")
         result = migrate_kb(self.root)
-        self.assertEqual(result, {"status": "migrated", "from": 1, "to": 2})
-        self.assertEqual(read_json(config_path)["schema_version"], 2)
+        self.assertEqual(result, {"status": "migrated", "from": 1, "to": 3})
+        self.assertEqual(read_json(config_path)["schema_version"], 3)
         self.assertEqual(migrate_kb(self.root)["status"], "already_current")
+
+    def test_migrate_v2_repository_to_v3(self) -> None:
+        config_path = self.root / "kb.json"
+        config = read_json(config_path)
+        config["schema_version"] = 2
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        result = migrate_kb(self.root)
+        self.assertEqual(result, {"status": "migrated", "from": 2, "to": 3})
+        self.assertTrue((self.root / ".kb/pages").is_dir())
+        self.assertTrue((self.root / ".kb/revisions").is_dir())
 
     def test_ingest_builds_version_chain_and_persistent_queue(self) -> None:
         first_event = event()
@@ -123,12 +154,13 @@ class KnowledgeBaseTest(unittest.TestCase):
             "---\nvisibility: restricted\nallowed_principals: [alice]\n---\n\n# Visible launch method\n",
             encoding="utf-8",
         )
+        bootstrap_pages(self.root)
         alice = query_kb(self.root, "launch method", "alice", 8, False)
         bob = query_kb(self.root, "launch method", "bob", 8, False)
         self.assertEqual([item["id"] for item in alice["evidence"]], ["visible"])
         self.assertEqual(bob["evidence"], [])
 
-    def test_outcome_classifies_and_promotes_draft_without_overwrite(self) -> None:
+    def test_outcome_promotes_new_node_to_active_revision(self) -> None:
         ingest_event(self.root, event())
         query = query_kb(self.root, "launch scope", "alice", 8, True)
         outcome = {
@@ -145,6 +177,8 @@ class KnowledgeBaseTest(unittest.TestCase):
                     "summary": "Define launch scope with evidence citations.",
                     "evidence": ["evt_001"],
                     "permission_scope": "alice",
+                    "page_id": "launch-scope-method",
+                    "valid_from": "2026-09-01",
                 }
             ],
         }
@@ -153,7 +187,9 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertEqual(submitted["update_proposals"][0]["decision"], "draft")
         promoted = promote_proposal(self.root, proposal_id, "approve", "alice")
         self.assertEqual(promoted["status"], "approved")
-        self.assertTrue((self.root / promoted["draft_path"]).exists())
+        self.assertTrue((self.root / promoted["page_path"]).exists())
+        registry = read_json(self.root / ".kb/pages/launch-scope-method.json")
+        self.assertEqual(registry["current_revision_id"], promoted["revision_id"])
         self.assertEqual(len(list_proposals(self.root, "approved")), 1)
 
     def test_compile_deduplicates_topics_and_requires_review_for_supersession(self) -> None:
@@ -163,6 +199,7 @@ class KnowledgeBaseTest(unittest.TestCase):
         first_compile = compile_pending(self.root)
         first_proposal = first_compile["jobs"][0]["proposals"][0]
         self.assertEqual(first_proposal["decision"], "draft")
+        promote_proposal(self.root, first_proposal["proposal_id"], "approve", "alice")
 
         second_event = event()
         second_event.update({"event_id": "evt_002", "source_version": "2"})
@@ -185,7 +222,7 @@ class KnowledgeBaseTest(unittest.TestCase):
         ingest_event(self.root, second_event)
         result = compile_pending(self.root)
         decisions = [job["proposals"][0]["decision"] for job in result["jobs"]]
-        self.assertEqual(decisions, ["draft", "review_required"])
+        self.assertEqual(decisions, ["draft", "blocked"])
 
     def test_compile_blocks_candidate_scope_outside_source_acl(self) -> None:
         source_event = event()
@@ -235,7 +272,7 @@ class KnowledgeBaseTest(unittest.TestCase):
         second = submit_outcome(self.root, outcome)
         self.assertEqual(first["outcome_id"], second["outcome_id"])
         self.assertEqual(first["update_proposals"], second["update_proposals"])
-        self.assertEqual(first["update_proposals"][0]["decision"], "review_required")
+        self.assertEqual(first["update_proposals"][0]["decision"], "blocked")
 
     def test_evolve_reports_status_and_lint(self) -> None:
         source_event = event()
@@ -246,12 +283,191 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertEqual(result["status"]["compile_queue"]["pending"], 0)
         self.assertTrue(result["lint"]["ok"], result["lint"])
 
+    def test_bootstrap_registers_active_pages_and_detects_drift(self) -> None:
+        page = self.root / "02_Wiki/existing.md"
+        page.write_text(page_markdown("Existing", "Original content", "existing"), encoding="utf-8")
+        draft = self.root / "02_Wiki/_Drafts/draft.md"
+        draft.write_text("# Draft content\n", encoding="utf-8")
+        first = bootstrap_pages(self.root)
+        self.assertEqual(first["created"], ["existing"])
+        self.assertTrue(lint_kb(self.root)["ok"])
+        page.write_text(page_markdown("Existing", "Untracked edit", "existing"), encoding="utf-8")
+        second = bootstrap_pages(self.root)
+        self.assertEqual(second["drifted"], ["existing"])
+        self.assertFalse(lint_kb(self.root)["ok"])
+
+    def test_query_uses_latest_raw_version_and_hides_deleted_source(self) -> None:
+        first = event()
+        first["body"] = "YesterdayLegacyOnly launch"
+        first["effective_at"] = "2026-08-31T00:00:00Z"
+        ingest_event(self.root, first)
+        second = event()
+        second.update({
+            "event_id": "evt_002",
+            "source_version": "2",
+            "body": "TodayCurrentOnly launch",
+            "effective_at": "2026-09-01T00:00:00Z",
+        })
+        ingest_event(self.root, second)
+        self.assertEqual(query_kb(self.root, "YesterdayLegacyOnly", "alice", 8, True)["evidence"], [])
+        current = query_kb(self.root, "TodayCurrentOnly", "alice", 8, True)
+        self.assertEqual([item["id"] for item in current["evidence"]], ["evt_002"])
+        historical = query_kb(
+            self.root, "YesterdayLegacyOnly", "alice", 8, True, as_of="2026-08-31T12:00:00Z"
+        )
+        self.assertEqual([item["id"] for item in historical["evidence"]], ["evt_001"])
+        deleted = event()
+        deleted.update({
+            "event_id": "evt_003",
+            "source_version": "3",
+            "event_type": "deleted",
+            "effective_at": "2026-09-02T00:00:00Z",
+        })
+        ingest_event(self.root, deleted)
+        self.assertEqual(query_kb(self.root, "TodayCurrentOnly", "alice", 8, True)["evidence"], [])
+
+    def test_replacement_switches_current_and_preserves_as_of_history(self) -> None:
+        ingest_event(self.root, event())
+        trace = query_kb(self.root, "launch", "alice", 8, True)["trace_id"]
+        first_outcome = {
+            "trace_id": trace,
+            "agent_id": "agent-1",
+            "task_id": "create-page",
+            "tenant_id": "tenant-test",
+            "principal": "alice",
+            "outcome_summary": "Create the initial page.",
+            "suggested_updates": [{
+                "type": "new_node",
+                "page_id": "launch-scope-method",
+                "title": "Launch scope method",
+                "summary": "YesterdayOnly",
+                "replacement_markdown": page_markdown("Launch scope method", "YesterdayOnly"),
+                "valid_from": "2026-08-31",
+                "evidence": ["evt_001"],
+                "permission_scope": "alice",
+            }],
+        }
+        first_proposal = submit_outcome(self.root, first_outcome)["update_proposals"][0]["proposal_id"]
+        first_revision = promote_proposal(self.root, first_proposal, "approve", "alice")["revision_id"]
+        trace2 = query_kb(self.root, "YesterdayOnly", "alice", 8, False)["trace_id"]
+        second_outcome = {
+            "trace_id": trace2,
+            "agent_id": "agent-1",
+            "task_id": "replace-page",
+            "tenant_id": "tenant-test",
+            "principal": "alice",
+            "outcome_summary": "Replace the page with current evidence.",
+            "suggested_updates": [{
+                "type": "rewrite_fact",
+                "page_id": "launch-scope-method",
+                "title": "Launch scope method",
+                "summary": "TodayOnly",
+                "replacement_markdown": page_markdown("Launch scope method", "TodayOnly"),
+                "valid_from": "2026-09-01",
+                "expected_revision_id": first_revision,
+                "evidence": ["evt_001"],
+                "permission_scope": "alice",
+            }],
+        }
+        second_proposal = submit_outcome(self.root, second_outcome)["update_proposals"][0]["proposal_id"]
+        second = promote_proposal(self.root, second_proposal, "approve", "alice")
+        self.assertEqual(second["superseded_revision_id"], first_revision)
+        self.assertEqual(query_kb(self.root, "YesterdayOnly", "alice", 8, False)["evidence"], [])
+        historical = query_kb(self.root, "YesterdayOnly", "alice", 8, False, as_of="2026-08-31T12:00:00Z")
+        self.assertEqual(historical["evidence"][0]["revision_id"], first_revision)
+        self.assertTrue(query_kb(self.root, "TodayOnly", "alice", 8, False)["evidence"])
+
+        rolled_back = rollback_page(self.root, "launch-scope-method", first_revision, "alice")
+        self.assertEqual(rolled_back["status"], "rolled_back")
+        self.assertTrue(query_kb(self.root, "YesterdayOnly", "alice", 8, False)["evidence"])
+
+    def test_stale_proposal_cannot_overwrite_newer_revision(self) -> None:
+        page = self.root / "02_Wiki/existing.md"
+        page.write_text(page_markdown("Existing", "Version one", "existing"), encoding="utf-8")
+        bootstrap_pages(self.root)
+        registry = read_json(self.root / ".kb/pages/existing.json")
+        current = registry["current_revision_id"]
+        ingest_event(self.root, event())
+        trace = query_kb(self.root, "launch", "alice", 8, True)["trace_id"]
+        base = {
+            "trace_id": trace,
+            "agent_id": "agent-1",
+            "tenant_id": "tenant-test",
+            "principal": "alice",
+            "outcome_summary": "Update existing.",
+        }
+        def submit(task: str, body: str) -> str:
+            payload = dict(base)
+            payload["task_id"] = task
+            payload["suggested_updates"] = [{
+                "type": "update_node",
+                "page_id": "existing",
+                "title": "Existing",
+                "summary": body,
+                "replacement_markdown": page_markdown("Existing", body, "existing"),
+                "expected_revision_id": current,
+                "valid_from": "2026-09-01",
+                "evidence": ["evt_001"],
+                "permission_scope": "alice",
+            }]
+            return submit_outcome(self.root, payload)["update_proposals"][0]["proposal_id"]
+        first = submit("update-a", "Version two")
+        stale = submit("update-b", "Conflicting version")
+        promote_proposal(self.root, first, "approve", "alice")
+        with self.assertRaises(KBError):
+            promote_proposal(self.root, stale, "approve", "alice")
+
+    def test_bootstrap_rejects_unsafe_page_id(self) -> None:
+        page = self.root / "02_Wiki/unsafe.md"
+        page.write_text("---\nid: ../unsafe\n---\n\n# Unsafe\n", encoding="utf-8")
+        with self.assertRaises(KBError):
+            bootstrap_pages(self.root)
+
+    def test_replacement_cannot_widen_source_acl(self) -> None:
+        page = self.root / "02_Wiki/existing.md"
+        page.write_text(page_markdown("Existing", "Private", "existing"), encoding="utf-8")
+        bootstrap_pages(self.root)
+        current = read_json(self.root / ".kb/pages/existing.json")["current_revision_id"]
+        ingest_event(self.root, event())
+        trace = query_kb(self.root, "launch", "alice", 8, True)["trace_id"]
+        public_replacement = page_markdown("Existing", "Leaked", "existing").replace(
+            "visibility: restricted", "visibility: public"
+        )
+        outcome = {
+            "trace_id": trace,
+            "agent_id": "agent-1",
+            "task_id": "widen",
+            "tenant_id": "tenant-test",
+            "principal": "alice",
+            "outcome_summary": "Unsafe visibility change.",
+            "suggested_updates": [{
+                "type": "update_node",
+                "page_id": "existing",
+                "title": "Existing",
+                "summary": "Leaked",
+                "replacement_markdown": public_replacement,
+                "expected_revision_id": current,
+                "evidence": ["evt_001"],
+                "permission_scope": "alice",
+            }],
+        }
+        proposal_id = submit_outcome(self.root, outcome)["update_proposals"][0]["proposal_id"]
+        with self.assertRaises(KBError):
+            promote_proposal(self.root, proposal_id, "approve", "alice")
+
     def test_mutation_policy_blocks_leakage_and_requires_review(self) -> None:
         blocked, _ = proposal_decision(
             {"type": "new_node", "evidence": ["evt_1"], "permission_scope": "alice", "cross_repository": True}
         )
         review, _ = proposal_decision(
-            {"type": "rewrite_fact", "evidence": ["evt_1"], "permission_scope": "alice"}
+            {
+                "type": "rewrite_fact",
+                "page_id": "existing",
+                "expected_revision_id": "rev_123",
+                "replacement_markdown": page_markdown("Existing", "Replacement", "existing"),
+                "evidence": ["evt_1"],
+                "permission_scope": "alice",
+            }
         )
         self.assertEqual(blocked, "blocked")
         self.assertEqual(review, "review_required")
@@ -263,6 +479,7 @@ class KnowledgeBaseTest(unittest.TestCase):
             "---\nvisibility: public\n---\n\n# Linked\n\n[[linked-index]] and `[[not-a-real-link]]`\n",
             encoding="utf-8",
         )
+        bootstrap_pages(self.root)
         lint = lint_kb(self.root)
         self.assertTrue(lint["ok"], lint)
         self.assertEqual(lint["warnings"], [])

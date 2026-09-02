@@ -28,11 +28,16 @@ connector cursor
   -> principal-aware query + usage/gap trace
   -> agent outcome learning signals
   -> idempotent proposal
-  -> human promotion
+  -> optimistic revision check
+  -> immutable revision + current-pointer switch
   -> lint and Git audit trail
 ```
 
 The connector owns polling, webhooks, native cursors, hydration, and semantic candidate extraction. The core owns deterministic storage, deduplication, policy, traces, and proposals. This boundary keeps the portable skill dependency-free and prevents it from claiming semantic capabilities it does not provide.
+
+Registered page revisions are the retrieval authority. Markdown under `02_Wiki` is the Obsidian-readable materialized current view. Normal retrieval excludes drafts, superseded page revisions, prior Raw versions, and deleted sources. Historical retrieval is explicit through `as_of` or `include_history`.
+
+The ledger records both `known_at` (when the repository accepted a revision) and `valid_from` (when its content is intended to be effective). The current implementation supports ordered replacement and point-in-time reads; backdated replacement that would rewrite an existing validity interval is blocked for explicit reconciliation.
 
 ## Safety boundary
 

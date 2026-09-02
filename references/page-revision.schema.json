@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/self-growing-kb/page-revision.schema.json",
+  "title": "Immutable Knowledge Page Revision",
+  "type": "object",
+  "required": [
+    "revision_id",
+    "page_id",
+    "content_hash",
+    "markdown",
+    "known_at",
+    "valid_from",
+    "proposal_id",
+    "reviewer",
+    "evidence"
+  ],
+  "properties": {
+    "revision_id": {"type": "string", "pattern": "^rev_"},
+    "page_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "content_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "markdown": {"type": "string"},
+    "known_at": {"type": "string"},
+    "valid_from": {"type": "string"},
+    "supersedes": {"type": ["string", "null"]},
+    "proposal_id": {"type": "string"},
+    "reviewer": {"type": "string"},
+    "evidence": {"type": "array", "items": {"type": "string"}},
+    "restored_from": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

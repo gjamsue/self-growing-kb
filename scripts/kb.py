@@ -10,6 +10,7 @@ from pathlib import Path
 
 from kb_core import (
     KBError,
+    bootstrap_pages,
     compile_pending,
     evolve_kb,
     ingest_event,
@@ -20,6 +21,7 @@ from kb_core import (
     promote_proposal,
     query_kb,
     read_json,
+    rollback_page,
     status_kb,
     submit_outcome,
 )
@@ -41,6 +43,9 @@ def parser() -> argparse.ArgumentParser:
     migrate = sub.add_parser("migrate", help="Upgrade a knowledge repository schema in place")
     migrate.add_argument("root", type=Path)
 
+    bootstrap = sub.add_parser("bootstrap", help="Register existing active Wiki pages as revision 1")
+    bootstrap.add_argument("root", type=Path)
+
     compile_command = sub.add_parser("compile", help="Compile pending Raw Events into proposals")
     compile_command.add_argument("root", type=Path)
     compile_command.add_argument("--limit", type=int, default=100)
@@ -58,6 +63,8 @@ def parser() -> argparse.ArgumentParser:
     query.add_argument("--principal", required=True)
     query.add_argument("--limit", type=int, default=8)
     query.add_argument("--wiki-only", action="store_true")
+    query.add_argument("--as-of", help="Query the Wiki view valid at an ISO-8601 timestamp")
+    query.add_argument("--include-history", action="store_true")
 
     outcome = sub.add_parser("outcome", help="Submit an Agent outcome and create update proposals")
     outcome.add_argument("root", type=Path)
@@ -73,6 +80,12 @@ def parser() -> argparse.ArgumentParser:
     promote.add_argument("--action", choices=("approve", "reject"), required=True)
     promote.add_argument("--reviewer", required=True)
 
+    rollback = sub.add_parser("rollback", help="Restore a prior page revision as a new revision")
+    rollback.add_argument("root", type=Path)
+    rollback.add_argument("page_id")
+    rollback.add_argument("revision_id")
+    rollback.add_argument("--reviewer", required=True)
+
     lint = sub.add_parser("lint", help="Validate repository structure and records")
     lint.add_argument("root", type=Path)
     return root
@@ -85,6 +98,8 @@ def run(args: argparse.Namespace) -> object:
         return ingest_event(args.root.resolve(), read_json(args.event.resolve()))
     if args.command == "migrate":
         return migrate_kb(args.root.resolve())
+    if args.command == "bootstrap":
+        return bootstrap_pages(args.root.resolve())
     if args.command in {"compile", "evolve"} and not 1 <= args.limit <= 10000:
         raise KBError("limit must be between 1 and 10000")
     if args.command == "compile":
@@ -96,13 +111,25 @@ def run(args: argparse.Namespace) -> object:
     if args.command == "query":
         if args.limit < 1 or args.limit > 100:
             raise KBError("limit must be between 1 and 100")
-        return query_kb(args.root.resolve(), args.question, args.principal, args.limit, not args.wiki_only)
+        return query_kb(
+            args.root.resolve(),
+            args.question,
+            args.principal,
+            args.limit,
+            not args.wiki_only,
+            as_of=args.as_of,
+            include_history=args.include_history,
+        )
     if args.command == "outcome":
         return submit_outcome(args.root.resolve(), read_json(args.outcome.resolve()))
     if args.command == "proposals":
         return {"proposals": list_proposals(args.root.resolve(), args.status)}
     if args.command == "promote":
         return promote_proposal(args.root.resolve(), args.proposal_id, args.action, args.reviewer)
+    if args.command == "rollback":
+        return rollback_page(
+            args.root.resolve(), args.page_id, args.revision_id, args.reviewer
+        )
     if args.command == "lint":
         result = lint_kb(args.root.resolve())
         if not result["ok"]:

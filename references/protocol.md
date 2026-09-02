@@ -17,6 +17,8 @@ kb.json
 .kb/compile-queue/{pending,processed,failed}/
 .kb/indexes/
 .kb/gaps/
+.kb/pages/
+.kb/revisions/<page_id>/
 ```
 
 `kb.json` binds one repository to one `profile` and `tenant_id`. Never change either value after ingesting data. Create another repository instead.
@@ -49,6 +51,14 @@ python3 scripts/kb.py migrate /path/to/wiki
 
 Migration upgrades repository structure and `kb.json` without rewriting Raw Events or Wiki pages.
 
+After migrating an existing Wiki, register its current state:
+
+```bash
+python3 scripts/kb.py bootstrap /path/to/wiki
+```
+
+Bootstrap creates revision 1 for active Wiki files outside `_Drafts`. Replaying it is safe; changed registered files are reported as drift rather than silently accepted.
+
 ### Compile and evolve
 
 ```bash
@@ -63,9 +73,11 @@ Compile consumes pending jobs once. It deduplicates candidates by `topic_key`: f
 
 ```bash
 python3 scripts/kb.py query /path/to/wiki "What did we decide?" --principal user-123
+python3 scripts/kb.py query /path/to/wiki "What was true then?" --principal user-123 --as-of 2026-08-31
+python3 scripts/kb.py query /path/to/wiki "Show the audit trail" --principal user-123 --include-history
 ```
 
-The local search implementation is a deterministic lexical baseline. It searches Markdown Wiki nodes and ACL-permitted Raw Events, writes a trace, increments document usage, and records repeated no-result questions as knowledge gaps. A future vector or graph retriever may replace ranking but must preserve the output contract and permission filter.
+The local search implementation is a deterministic lexical baseline. Normal queries search only the registered active revision and each source's latest non-deleted Raw Event. `--as-of` selects revisions and Raw Events valid at a point in time. Superseded revisions and prior Raw versions require `--include-history` or an explicit historical query. `_Drafts` are never part of authoritative retrieval.
 
 ### Submit outcome
 
@@ -82,7 +94,13 @@ python3 scripts/kb.py proposals /path/to/wiki --status pending
 python3 scripts/kb.py promote /path/to/wiki prop_123 --action approve --reviewer user-123
 ```
 
-Approved new or expanded content becomes a file in `02_Wiki/_Drafts/`. Established Wiki pages are never overwritten by the CLI.
+For new pages, approval creates revision 1 and an active Markdown view. Updating an existing page requires `page_id`, `expected_revision_id`, `valid_from`, and complete `replacement_markdown`. Approval verifies the expected revision, stores an immutable replacement, marks the old registry entry superseded, switches current, and records the audit proposal.
+
+Restore a prior revision without deleting later history:
+
+```bash
+python3 scripts/kb.py rollback /path/to/wiki page-id rev_123 --reviewer user-123
+```
 
 ### Lint
 
@@ -90,7 +108,7 @@ Approved new or expanded content becomes a file in `02_Wiki/_Drafts/`. Establish
 python3 scripts/kb.py lint /path/to/wiki
 ```
 
-Lint checks structure, JSON validity, tenant consistency, Raw Event identity, Wiki headings, proposal records, and unresolved links.
+Lint checks structure, JSON validity, tenant consistency, Raw Event identity, Wiki headings, proposal records, unresolved links, registry pointers, revision existence, and Markdown drift.
 
 ## Harness contract
 

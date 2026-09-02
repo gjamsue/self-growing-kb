@@ -11,8 +11,10 @@
   "suggested_updates": [
     {
       "type": "new_node",
+      "page_id": "example-reusable-method",
       "title": "Example reusable method",
       "summary": "A reusable method supported by the cited source.",
+      "valid_from": "2026-09-01T00:00:00Z",
       "evidence": ["evt_example_001"],
       "permission_scope": "user-example"
     }

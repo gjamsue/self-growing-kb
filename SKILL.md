@@ -26,13 +26,14 @@ Read [protocol.md](references/protocol.md) for command contracts and repository 
 ## Execute the workflow
 
 1. Initialize an empty repository with `init` only when the user asks to create a knowledge repository.
-2. Convert hydrated source material to a Normalized Raw Event and call `ingest`. Include typed `knowledge_candidates` when hydration can extract them. Never write crawled content directly to Wiki.
-3. Run `evolve` at a checkpoint, after an idle batch, or after connector synchronization. It processes only pending event deltas and emits idempotent proposals.
-4. Call `query` with an explicit principal. Return the answer package and preserve its `trace_id`; query automatically records usage and repeated gaps.
-5. After a meaningful task, call `outcome` with the trace and any correction, successful-pattern, stale, conflict, or missing-knowledge signals.
-6. Let compile and outcome processing classify updates as `auto_commit`, `draft`, `review_required`, or `blocked`.
-7. Use `promote` only after the policy permits it. Create drafts and audit records; never silently overwrite an established Wiki page.
-8. Run `lint` after mutations and before committing changes. Use `status` to inspect queue health, gaps, usage, topics, and proposals.
+2. After migrating a repository that already contains Wiki Markdown, run `bootstrap` once. Registered revisions become the authority for query and direct untracked edits become lint errors.
+3. Convert hydrated source material to a Normalized Raw Event and call `ingest`. Include typed `knowledge_candidates` when hydration can extract them. Never write crawled content directly to Wiki.
+4. Run `evolve` at a checkpoint, after an idle batch, or after connector synchronization. It processes only pending event deltas and emits idempotent proposals.
+5. Call `query` with an explicit principal. By default it searches only active page revisions and each source's latest Raw Event. Use `--as-of` or `--include-history` only for temporal or audit questions.
+6. After a meaningful task, call `outcome` with the trace and any correction, successful-pattern, stale, conflict, or missing-knowledge signals.
+7. Let compile and outcome processing classify updates as `auto_commit`, `draft`, `review_required`, or `blocked`.
+8. Use `promote` only after the policy permits it. Existing-page updates require complete `replacement_markdown` and the expected current revision. Approval creates a new immutable revision and switches the current pointer.
+9. Use `rollback` to restore prior content as a new audited revision. Run `lint` after mutations and before committing changes.
 
 ## Preserve evidence and permissions
 
@@ -51,11 +52,13 @@ Read [protocol.md](references/protocol.md) for command contracts and repository 
 - Create drafts for evidence-backed new nodes and low-risk expansions.
 - Require review for fact rewrites, conflict resolution, access changes, deletion, and durable policy or judgment changes.
 - Block proposals with no evidence, unknown permission scope, or cross-repository leakage risk.
-- On approval, write a new draft or an approved proposal record. Do not overwrite an existing Wiki page from the CLI.
+- Never edit a registered Wiki page outside Promote or Rollback. Lint treats content that differs from the current revision as drift.
+- Require optimistic revision matching so an older proposal cannot overwrite a newer approved revision.
+- Reject replacement Markdown whose page ID differs or whose visibility exceeds the supporting permission scope.
 
 ## Respond to the user
 
-Report which repository was used, which evidence supported the answer, what gaps were found, and which proposals were created. Distinguish clearly between a proposal, an approved draft, and committed long-term knowledge.
+Report which repository and revision were used, which evidence supported the answer, what gaps were found, and which proposals were created. Distinguish clearly between a proposal and an activated long-term revision.
 
 ## Validate changes
 

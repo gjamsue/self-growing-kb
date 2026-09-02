@@ -28,8 +28,12 @@
     {
       "memory_type": "fact",
       "topic_key": "example/source-fact",
+      "claim_key": "example/source-fact",
+      "page_id": "example-source-fact",
       "title": "Example source fact",
       "summary": "A reusable claim extracted during hydration.",
+      "valid_from": "2026-09-01T00:00:00Z",
+      "replacement_markdown": "---\nid: example-source-fact\ntype: wiki\nstatus: active\n---\n\n# Example source fact\n\nA reusable claim extracted during hydration.\n",
       "permission_scope": "user-example",
       "confidence": "medium",
       "evidence": ["evt_example_001"]
