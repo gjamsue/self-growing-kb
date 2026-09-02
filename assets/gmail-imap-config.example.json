@@ -9,6 +9,11 @@
   "max_messages": 50,
   "version_mode": "latest-message-id",
   "body_mode": "snippet",
+  "candidate_extraction": {
+    "enabled": false,
+    "version": "gmail-rules-v1",
+    "min_score": 2
+  },
   "accounts": [
     {
       "account": "personal@example.com",

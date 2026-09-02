@@ -25,6 +25,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
+from gmail_candidate_extractor import enrich_event
 from gmail_thread_to_event import build_event
 
 
@@ -315,6 +316,7 @@ def sync_account(root: Path, config: dict[str, Any], account: dict[str, Any], dr
             "search": imap_search_args(account, config),
             "body_mode": body_mode,
         }
+        event = enrich_event(event, config, account)
         ingest_result = {"skipped": True, "dry_run": dry_run}
         if not dry_run:
             ingest_result = ingest_event(root, config, event)

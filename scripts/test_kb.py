@@ -13,6 +13,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from gmail_api_sync import decode_base64url, normalize_thread
+from gmail_candidate_extractor import enrich_event, extract_candidates
 from gmail_imap_sync import imap_search_args, normalize_imap_message
 from gmail_thread_to_event import build_event
 from kb_core import (
@@ -281,6 +282,62 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertEqual(event["source_id"], "gmail/imap@example.com/thread/thread-42")
         self.assertEqual(event["source_version"], "message:msg-42")
         self.assertIn("IMAP body text", event["body"])
+
+    def test_gmail_candidate_extractor_enriches_high_signal_mail(self) -> None:
+        message = normalize_imap_message(
+            imap_email(),
+            {"uid": "42", "x_gm_thrid": "thread-42", "x_gm_msgid": "msg-42"},
+            "plain",
+        )
+        message["payload"]["headers"] = [
+            {"name": "From", "value": "Teacher <teacher@example.com>"},
+            {"name": "To", "value": "Parent <parent@example.com>"},
+            {"name": "Subject", "value": "Alina school appointment deadline"},
+            {"name": "Date", "value": "Tue, 1 Sep 2026 17:51:55 -0700"},
+        ]
+        message["payload"]["body"]["content"] = "Alina has a school appointment deadline on 2026-09-10."
+        event = build_event(
+            Namespace(
+                tenant_id="tenant-test",
+                principal="alice",
+                event_type="updated",
+                version_mode="latest-message-id",
+                source_url=None,
+                hydrated_at="2026-09-02T00:00:00Z",
+                mailbox_account="imap@example.com",
+            ),
+            {"id": "thread-42", "history_id": "42", "messages": [message]},
+        )
+        config = {
+            "tenant_id": "tenant-test",
+            "principal": "alice",
+            "candidate_extraction": {"enabled": True, "version": "gmail-rules-v1", "min_score": 2},
+        }
+        candidates = extract_candidates(event, config)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["memory_type"], "event")
+        self.assertIn("family/school", candidates[0]["topic_key"])
+
+        enriched = enrich_event(event, config)
+        self.assertTrue(enriched["source_version"].endswith("+candidate:gmail-rules-v1"))
+        self.assertEqual(len(enriched["knowledge_candidates"]), 1)
+        self.assertIs(enrich_event(enriched, config), enriched)
+
+    def test_gmail_candidate_extractor_skips_low_signal_mail(self) -> None:
+        base = event()
+        base.update(
+            {
+                "source_type": "mail",
+                "source_id": "gmail/example/thread/1",
+                "source_version": "message:1",
+                "title": "Random hello",
+                "body": "Just saying hi.",
+                "mailbox": {"provider": "gmail", "account": "imap@example.com"},
+            }
+        )
+        config = {"principal": "alice", "candidate_extraction": {"enabled": True, "min_score": 2}}
+        self.assertEqual(extract_candidates(base, config), [])
+        self.assertIs(enrich_event(base, config), base)
 
     def test_migrate_v1_repository_without_rewriting_data(self) -> None:
         config_path = self.root / "kb.json"

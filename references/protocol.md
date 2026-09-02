@@ -85,6 +85,27 @@ python3 scripts/gmail_imap_sync.py sync \
 
 This path does not require a Google Cloud OAuth client. It expects each Gmail account to enable 2-Step Verification and provide an app password through an ignored `credential_file`, `password_file`, or environment variable. Gmail IMAP supports `X-GM-RAW`, so a config can keep Gmail-style search such as `newer_than:7d -in:spam -in:trash -category:promotions`.
 
+Gmail connectors can optionally enrich Raw Events with conservative rule-based `knowledge_candidates`:
+
+```json
+{
+  "candidate_extraction": {
+    "enabled": true,
+    "version": "gmail-rules-v1",
+    "min_score": 2
+  }
+}
+```
+
+Candidate enrichment appends `+candidate:<version>` to `source_version`, so extractor improvements create auditable Raw Event versions instead of mutating older evidence. To backfill already-ingested Gmail evidence, run:
+
+```bash
+python3 scripts/gmail_candidate_extractor.py backfill \
+  --kb-root /path/to/wiki \
+  --config /path/to/wiki/.kb/connectors/gmail-imap.json \
+  --evolve
+```
+
 ### Migrate
 
 ```bash
