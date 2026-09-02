@@ -11,6 +11,7 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 
+from gmail_api_sync import decode_base64url, normalize_thread
 from gmail_thread_to_event import build_event
 from kb_core import (
     KBError,
@@ -114,6 +115,39 @@ def gmail_thread(message_id: str = "msg-1", thread_id: str = "thread-1") -> dict
     }
 
 
+def gmail_rest_thread() -> dict:
+    encoded = "QVBJIGJvZHkgdGV4dA"
+    return {
+        "id": "api-thread-1",
+        "historyId": "456",
+        "messages": [
+            {
+                "id": "api-msg-1",
+                "threadId": "api-thread-1",
+                "labelIds": ["INBOX"],
+                "historyId": "455",
+                "internalDate": "1788310315000",
+                "snippet": "Snippet text",
+                "payload": {
+                    "mimeType": "multipart/alternative",
+                    "headers": [
+                        {"name": "From", "value": "Sender <sender@example.com>"},
+                        {"name": "To", "value": "Reader <reader@example.com>"},
+                        {"name": "Subject", "value": "API thread"},
+                    ],
+                    "parts": [
+                        {
+                            "partId": "0",
+                            "mimeType": "text/plain",
+                            "body": {"size": 13, "data": encoded},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+
 class KnowledgeBaseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -158,6 +192,41 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertNotEqual(personal["source_id"], work["source_id"])
         self.assertEqual(personal["mailbox"]["account"], "personal@example.com")
         self.assertIn("Alina understands the requested phrases.", personal["body"])
+
+    def test_gmail_api_thread_normalization_decodes_rest_payload(self) -> None:
+        self.assertEqual(decode_base64url("QVBJIGJvZHkgdGV4dA"), "API body text")
+        plain = normalize_thread(gmail_rest_thread(), "plain")
+        event = build_event(
+            Namespace(
+                tenant_id="tenant-test",
+                principal="alice",
+                event_type="updated",
+                version_mode="thread-history-id",
+                source_url=None,
+                hydrated_at="2026-09-02T00:00:00Z",
+                mailbox_account="api@example.com",
+            ),
+            plain,
+        )
+        self.assertEqual(event["source_id"], "gmail/api@example.com/thread/api-thread-1")
+        self.assertEqual(event["source_version"], "history:456")
+        self.assertIn("API body text", event["body"])
+
+        snippet = normalize_thread(gmail_rest_thread(), "snippet")
+        snippet_event = build_event(
+            Namespace(
+                tenant_id="tenant-test",
+                principal="alice",
+                event_type="updated",
+                version_mode="latest-message-id",
+                source_url=None,
+                hydrated_at="2026-09-02T00:00:00Z",
+                mailbox_account="api@example.com",
+            ),
+            snippet,
+        )
+        self.assertIn("Snippet text", snippet_event["body"])
+        self.assertNotIn("API body text", snippet_event["body"])
 
     def test_migrate_v1_repository_without_rewriting_data(self) -> None:
         config_path = self.root / "kb.json"

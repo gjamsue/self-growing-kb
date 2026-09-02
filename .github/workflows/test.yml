@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Compile Python
-        run: python -m py_compile scripts/kb.py scripts/kb_core.py scripts/gmail_thread_to_event.py scripts/test_kb.py
+        run: python -m py_compile scripts/kb.py scripts/kb_core.py scripts/gmail_thread_to_event.py scripts/gmail_api_sync.py scripts/test_kb.py
       - name: Run tests
         run: PYTHONDONTWRITEBYTECODE=1 python scripts/test_kb.py
       - name: Validate JSON schemas and examples

@@ -57,6 +57,23 @@ python3 scripts/kb.py ingest /path/to/wiki raw-event.json
 
 The adapter emits `source_type: mail` and a source id shaped as `gmail/<mailbox-account>/thread/<thread-id>`. This keeps multiple Gmail accounts separate even when providers reuse thread ids or the same conversation appears in more than one mailbox. The default `source_version` is the latest message id, which changes when a new message arrives but stays stable across read/unread label churn. Use `--version-mode thread-history-id` only when the connector intentionally treats Gmail metadata and labels as meaningful source changes.
 
+For harness-independent acquisition, use the Gmail API sync adapter with user-owned OAuth token files:
+
+```bash
+python3 scripts/gmail_api_sync.py auth-url \
+  --client-secret-file .kb/private-credentials/gmail/oauth-client.json
+python3 scripts/gmail_api_sync.py exchange-code \
+  --client-secret-file .kb/private-credentials/gmail/oauth-client.json \
+  --code "$GOOGLE_OAUTH_CODE" \
+  --token-file .kb/private-credentials/gmail/personal-token.json
+python3 scripts/gmail_api_sync.py sync \
+  --kb-root /path/to/wiki \
+  --config /path/to/wiki/.kb/connectors/gmail-api.json \
+  --evolve
+```
+
+Each configured account has its own `account`, `token_file`, and optional query/body settings. Token and client-secret files must stay outside git. `body_mode: snippet` stores Gmail snippets for lower privacy exposure; `body_mode: plain` decodes plain-text message bodies when richer evidence is required.
+
 ### Migrate
 
 ```bash

@@ -1,0 +1,25 @@
+{
+  "tenant_id": "personal-example",
+  "principal": "user-example",
+  "kb_cli": "../self-growing-kb/scripts/kb.py",
+  "query": "newer_than:7d -in:spam -in:trash -category:promotions",
+  "max_threads": 30,
+  "version_mode": "latest-message-id",
+  "body_mode": "snippet",
+  "accounts": [
+    {
+      "account": "personal@example.com",
+      "enabled": true,
+      "client_secret_file": ".kb/private-credentials/gmail/oauth-client.json",
+      "token_file": ".kb/private-credentials/gmail/personal-token.json"
+    },
+    {
+      "account": "work@example.com",
+      "enabled": false,
+      "client_secret_file": ".kb/private-credentials/gmail/oauth-client.json",
+      "token_file": ".kb/private-credentials/gmail/work-token.json",
+      "query": "newer_than:7d -in:spam -in:trash",
+      "body_mode": "plain"
+    }
+  ]
+}
