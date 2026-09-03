@@ -20,12 +20,19 @@ from kb_core import event_key
 DEFAULT_VERSION = "gmail-rules-v1"
 DEFAULT_VALUE_KEYWORDS = [
     "alina",
+    "jocelyn",
+    "miss west",
     "school",
     "montessori",
     "teacher",
     "visa",
     "passport",
     "vfs",
+    "vfsglobal",
+    "fedex",
+    "shipment",
+    "tracking",
+    "tracking number",
     "appointment",
     "schedule",
     "meeting",
@@ -52,6 +59,7 @@ DEFAULT_SKIP_KEYWORDS = [
     "verification code",
     "one-time code",
     "password reset",
+    "daily digest",
 ]
 
 
@@ -121,11 +129,36 @@ def matched_keywords(text: str, keywords: list[str]) -> list[str]:
     return sorted({keyword for keyword in keywords if keyword.lower() in lowered})
 
 
+def rule_terms(rule: dict[str, Any], key: str) -> list[str]:
+    values = rule.get(key) or []
+    return [str(value).strip().lower() for value in values if str(value).strip()]
+
+
+def priority_rule_for(text: str, extraction: dict[str, Any]) -> dict[str, Any] | None:
+    lowered = text.lower()
+    for rule in extraction.get("priority_rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        all_terms = rule_terms(rule, "keywords_all")
+        any_terms = rule_terms(rule, "keywords_any")
+        none_terms = rule_terms(rule, "keywords_none")
+        if none_terms and any(term in lowered for term in none_terms):
+            continue
+        if all_terms and not all(term in lowered for term in all_terms):
+            continue
+        if any_terms and not any(term in lowered for term in any_terms):
+            continue
+        if all_terms or any_terms:
+            return rule
+    return None
+
+
 def category_for(text: str) -> tuple[str, str, list[str]]:
     lowered = text.lower()
     rules = [
-        ("family/school", "Family school mail", ["alina", "school", "montessori", "teacher", "classroom"]),
-        ("admin/visa", "Visa and documents mail", ["visa", "passport", "vfs", "application", "document"]),
+        ("family/school", "Family school mail", ["alina", "jocelyn", "miss west", "school", "montessori", "teacher", "classroom"]),
+        ("admin/visa", "Visa and documents mail", ["visa", "passport", "vfs", "vfsglobal", "application", "document"]),
+        ("admin/shipments", "Shipment mail", ["fedex", "shipment", "tracking", "delivery", "delivered"]),
         ("calendar/appointments", "Appointment and schedule mail", ["appointment", "schedule", "meeting", "deadline"]),
         ("finance/records", "Financial record mail", ["invoice", "receipt", "payment", "billing"]),
         ("projects/personal-wiki", "Personal wiki mail", ["personal wiki", "knowledge base", "codex", "github"]),
@@ -146,6 +179,39 @@ def date_hint(event: dict[str, Any]) -> str:
     if hydrated:
         return hydrated[:10]
     return utc_today()
+
+
+def has_date_hint(text: str) -> bool:
+    numeric = r"\b(?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]20\d{2})\b"
+    month_name = r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+20\d{2}\b"
+    weekday_date = r"\b(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+20\d{2}\b"
+    return bool(re.search(numeric, text, re.I) or re.search(month_name, text, re.I) or re.search(weekday_date, text, re.I))
+
+
+def has_action_hint(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:deadline|due|appointment|meeting|schedule|scheduled|confirm|pickup|submit|renew|book|ship(?:ped|ment)?|tracking|delivery|delivered)\b",
+            text,
+            re.I,
+        )
+    )
+
+
+def shipment_tracking_number(text: str) -> str | None:
+    lowered = text.lower()
+    if not any(term in lowered for term in ("fedex", "shipment", "tracking", "delivery", "delivered")):
+        return None
+    for match in re.finditer(r"\b\d{10,22}\b", text):
+        value = match.group(0)
+        if not value.startswith("20"):
+            return value
+    return None
+
+
+def rule_tags(rule: dict[str, Any], fallback: list[str]) -> list[str]:
+    tags = [str(tag) for tag in rule.get("tags") or [] if str(tag).strip()]
+    return tags or fallback
 
 
 def replacement_markdown(
@@ -190,33 +256,54 @@ def extract_candidates(
     if not extraction.get("enabled"):
         return []
     text = f"{event.get('title', '')}\n{event.get('body', '')}"
+    priority_rule = priority_rule_for(text, extraction)
     skip_hits = matched_keywords(text, keyword_list(extraction, "skip_keywords", DEFAULT_SKIP_KEYWORDS))
-    if skip_hits:
+    if skip_hits and not priority_rule:
         return []
     value_hits = matched_keywords(text, keyword_list(extraction, "value_keywords", DEFAULT_VALUE_KEYWORDS))
-    has_date = bool(re.search(r"\b(?:20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]20\d{2})\b", text))
-    has_action = bool(re.search(r"\b(?:deadline|due|appointment|meeting|schedule|confirm|pickup|submit|renew|book)\b", text, re.I))
+    if not value_hits and not priority_rule:
+        return []
+    has_date = has_date_hint(text)
+    has_action = has_action_hint(text)
     score = len(value_hits) + int(has_date) + int(has_action)
     min_score = int(extraction.get("min_score") or 2)
-    if score < min_score:
+    if score < min_score and not priority_rule:
         return []
 
     topic_prefix, category_label, category_hits = category_for(text)
+    if priority_rule:
+        topic_prefix = str(priority_rule.get("topic_prefix") or topic_prefix)
+        category_label = str(priority_rule.get("label") or category_label)
     title = compact(str(event.get("title") or "Gmail thread"), 96)
-    page_id = f"gmail-{slug(topic_prefix.split('/')[-1])}-{slug(title)[:72]}"
-    topic_key = f"{topic_prefix}/{slug(title)}"
+    tracking_number = shipment_tracking_number(text)
+    configured_page_id = str(priority_rule.get("page_id") or "") if priority_rule else ""
+    configured_topic_key = str(priority_rule.get("topic_key") or "") if priority_rule else ""
+    if configured_page_id:
+        page_id = slug(configured_page_id)
+    elif tracking_number:
+        page_id = f"gmail-shipment-{tracking_number}"
+    else:
+        page_id = f"gmail-{slug(topic_prefix.split('/')[-1])}-{slug(title)[:72]}"
+    if configured_topic_key:
+        topic_key = configured_topic_key
+    elif tracking_number:
+        topic_key = f"{topic_prefix}/tracking-{tracking_number}"
+    else:
+        topic_key = f"{topic_prefix}/{slug(title)}"
     evidence = [str(event["event_id"])]
+    match_reason = ", ".join(value_hits[:8]) or ", ".join(category_hits) or "configured priority rule"
     summary = (
         f'Gmail thread "{title}" appears relevant to {category_label.lower()} '
-        f"because it matched {', '.join(value_hits[:8]) or ', '.join(category_hits) or 'configured value signals'}. "
+        f"because it matched {match_reason}. "
         f"Snippet: {compact(str(event.get('body') or ''), 260)}"
     )
-    confidence = "medium" if score >= int(extraction.get("medium_score") or 3) else "low"
+    confidence = str(priority_rule.get("confidence")) if priority_rule and priority_rule.get("confidence") else ("medium" if score >= int(extraction.get("medium_score") or 3) else "low")
     principal = str(config.get("principal") or "unknown")
-    tags = [topic_prefix.split("/")[0], topic_prefix.split("/")[-1], "gmail"]
+    tags = rule_tags(priority_rule or {}, [topic_prefix.split("/")[0], topic_prefix.split("/")[-1], "gmail"])
+    memory_type = str(priority_rule.get("memory_type") or "event") if priority_rule else "event"
     return [
         {
-            "memory_type": "event",
+            "memory_type": memory_type,
             "topic_key": topic_key,
             "claim_key": f"{topic_key}:{event.get('source_version')}",
             "page_id": page_id,
@@ -238,6 +325,8 @@ def extract_candidates(
                 "version": extraction_version(config, account),
                 "score": score,
                 "keyword_hits": value_hits,
+                "priority_rule": priority_rule.get("name") if priority_rule else None,
+                "skip_hits_ignored": skip_hits if skip_hits and priority_rule else [],
             },
         }
     ]

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from gmail_api_sync import decode_base64url, normalize_thread
 from gmail_candidate_extractor import enrich_event, extract_candidates
-from gmail_imap_sync import imap_search_args, normalize_imap_message
+from gmail_imap_sync import imap_search_arg_sets, imap_search_args, normalize_imap_message
 from gmail_thread_to_event import build_event
 from kb_core import (
     KBError,
@@ -262,6 +262,16 @@ class KnowledgeBaseTest(unittest.TestCase):
             imap_search_args({}, {"imap_search": "SINCE 01-Sep-2026 NOT DELETED"}),
             ["SINCE", "01-Sep-2026", "NOT", "DELETED"],
         )
+        self.assertEqual(
+            imap_search_arg_sets(
+                {"supplemental_gmail_searches": ["newer_than:14d jocelyn"]},
+                {"gmail_search": "newer_than:7d -in:spam"},
+            ),
+            [
+                ["X-GM-RAW", '"newer_than:7d -in:spam"'],
+                ["X-GM-RAW", '"newer_than:14d jocelyn"'],
+            ],
+        )
 
         normalized = normalize_imap_message(
             imap_email(),
@@ -323,6 +333,78 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertTrue(enriched["source_version"].endswith("+candidate:gmail-rules-v1"))
         self.assertEqual(len(enriched["knowledge_candidates"]), 1)
         self.assertIs(enrich_event(enriched, config), enriched)
+
+    def test_gmail_candidate_extractor_honors_priority_rules(self) -> None:
+        base = event()
+        base.update(
+            {
+                "event_id": "evt_mail_school",
+                "source_type": "mail",
+                "source_id": "gmail/example/thread/school",
+                "source_version": "message:school",
+                "title": "From Miss West",
+                "body": "Can we meet about Jocelyn next week?",
+                "mailbox": {"provider": "gmail", "account": "imap@example.com"},
+            }
+        )
+        config = {
+            "principal": "alice",
+            "candidate_extraction": {
+                "enabled": True,
+                "min_score": 3,
+                "priority_rules": [
+                    {
+                        "name": "jocelyn-school",
+                        "label": "Jocelyn school mail",
+                        "topic_prefix": "family/school",
+                        "keywords_any": ["jocelyn", "miss west"],
+                        "tags": ["family", "school", "jocelyn", "gmail"],
+                        "confidence": "medium",
+                    }
+                ],
+            },
+        }
+        candidates = extract_candidates(base, config)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "Jocelyn school mail: From Miss West")
+        self.assertIn("family/school", candidates[0]["topic_key"])
+        self.assertEqual(candidates[0]["confidence"], "medium")
+        self.assertEqual(candidates[0]["extraction"]["priority_rule"], "jocelyn-school")
+
+    def test_gmail_candidate_extractor_tracks_vfs_and_fedex_shipments(self) -> None:
+        vfs = event()
+        vfs.update(
+            {
+                "event_id": "evt_mail_vfs",
+                "source_type": "mail",
+                "source_id": "gmail/example/thread/vfs",
+                "source_version": "message:vfs",
+                "title": "Notification from VFS Global",
+                "body": "Your visa application document update is available from VFSGlobal.",
+                "mailbox": {"provider": "gmail", "account": "imap@example.com"},
+            }
+        )
+        fedex = event()
+        fedex.update(
+            {
+                "event_id": "evt_mail_fedex",
+                "source_type": "mail",
+                "source_id": "gmail/example/thread/fedex",
+                "source_version": "message:fedex",
+                "title": "Your shipment was delivered 876319903875",
+                "body": "FedEx delivered your shipment. Tracking number 876319903875.",
+                "mailbox": {"provider": "gmail", "account": "imap@example.com"},
+            }
+        )
+        config = {"principal": "alice", "candidate_extraction": {"enabled": True, "min_score": 2}}
+
+        vfs_candidate = extract_candidates(vfs, config)[0]
+        self.assertIn("admin/visa", vfs_candidate["topic_key"])
+        self.assertIn("Visa and documents mail", vfs_candidate["title"])
+
+        fedex_candidate = extract_candidates(fedex, config)[0]
+        self.assertEqual(fedex_candidate["page_id"], "gmail-shipment-876319903875")
+        self.assertIn("admin/shipments/tracking-876319903875", fedex_candidate["topic_key"])
 
     def test_gmail_candidate_extractor_skips_low_signal_mail(self) -> None:
         base = event()

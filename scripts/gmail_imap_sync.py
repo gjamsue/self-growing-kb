@@ -219,6 +219,41 @@ def imap_search_args(account: dict[str, Any], config: dict[str, Any]) -> list[st
     return ["SINCE", imap_since(since_days), "NOT", "DELETED"]
 
 
+def search_values(account: dict[str, Any], config: dict[str, Any], key: str) -> list[str]:
+    values: list[str] = []
+    for source in (config, account):
+        raw = source.get(key)
+        if isinstance(raw, str) and raw.strip():
+            values.append(raw.strip())
+        elif isinstance(raw, list):
+            values.extend(str(value).strip() for value in raw if str(value).strip())
+    return values
+
+
+def imap_search_arg_sets(account: dict[str, Any], config: dict[str, Any]) -> list[list[str]]:
+    searches = [imap_search_args(account, config)]
+    for gmail_search in search_values(account, config, "supplemental_gmail_searches"):
+        searches.append(["X-GM-RAW", imap_quote(gmail_search)])
+    for imap_search in search_values(account, config, "supplemental_imap_searches"):
+        searches.append(imap_search.split())
+    unique: list[list[str]] = []
+    seen = set()
+    for search in searches:
+        key = tuple(search)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(search)
+    return unique
+
+
+def uid_sort_key(uid: bytes) -> int:
+    try:
+        return int(uid)
+    except ValueError:
+        return 0
+
+
 def connect(account_email: str, password: str, host: str, port: int) -> imaplib.IMAP4_SSL:
     client = imaplib.IMAP4_SSL(host, port, ssl_context=ssl.create_default_context())
     try:
@@ -237,12 +272,18 @@ def fetch_recent_messages(
     status, _ = client.select(mailbox, readonly=True)
     if status != "OK":
         raise GmailImapError(f"Could not select IMAP mailbox: {mailbox}")
-    status, data = client.uid("SEARCH", *imap_search_args(account, config))
-    if status != "OK":
-        raise GmailImapError(f"IMAP search failed: {data}")
-    uids = (data[0] or b"").split()
     max_messages = int(account.get("max_messages") or config.get("max_messages") or 50)
-    selected = uids[-max_messages:]
+    max_supplemental_messages = int(account.get("max_supplemental_messages") or config.get("max_supplemental_messages") or max_messages)
+    selected_by_uid: dict[bytes, None] = {}
+    for index, search in enumerate(imap_search_arg_sets(account, config)):
+        status, data = client.uid("SEARCH", *search)
+        if status != "OK":
+            raise GmailImapError(f"IMAP search failed for {' '.join(search)}: {data}")
+        uids = sorted((data[0] or b"").split(), key=uid_sort_key)
+        limit = max_messages if index == 0 else max_supplemental_messages
+        for uid in uids[-limit:]:
+            selected_by_uid[uid] = None
+    selected = sorted(selected_by_uid.keys(), key=uid_sort_key)
     fetched = []
     for uid in selected:
         status, parts = client.uid("FETCH", uid, "(UID X-GM-THRID X-GM-MSGID RFC822)")
@@ -314,6 +355,7 @@ def sync_account(root: Path, config: dict[str, Any], account: dict[str, Any], dr
             "host": host,
             "mailbox": str(account.get("mailbox") or config.get("mailbox") or DEFAULT_MAILBOX),
             "search": imap_search_args(account, config),
+            "searches": imap_search_arg_sets(account, config),
             "body_mode": body_mode,
         }
         event = enrich_event(event, config, account)
