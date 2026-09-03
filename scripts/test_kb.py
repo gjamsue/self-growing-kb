@@ -402,6 +402,12 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertIn("admin/visa", vfs_candidate["topic_key"])
         self.assertIn("Visa and documents mail", vfs_candidate["title"])
 
+        appointment = dict(vfs)
+        appointment["event_id"] = "evt_mail_vfs_appointment"
+        appointment["title"] = "Notification: Appointment with VFS Global Group @ Wed Aug 26, 2026 8:30am"
+        appointment_candidate = extract_candidates(appointment, config)[0]
+        self.assertNotIn("@", appointment_candidate["page_id"])
+
         fedex_candidate = extract_candidates(fedex, config)[0]
         self.assertEqual(fedex_candidate["page_id"], "gmail-shipment-876319903875")
         self.assertIn("admin/shipments/tracking-876319903875", fedex_candidate["topic_key"])

@@ -209,6 +209,12 @@ def shipment_tracking_number(text: str) -> str | None:
     return None
 
 
+def safe_page_id(value: str) -> str:
+    safe = re.sub(r"[^a-z0-9._-]+", "-", value.strip().lower())
+    safe = re.sub(r"-{2,}", "-", safe).strip("-._")
+    return safe[:128].strip("-._") or "gmail-note"
+
+
 def rule_tags(rule: dict[str, Any], fallback: list[str]) -> list[str]:
     tags = [str(tag) for tag in rule.get("tags") or [] if str(tag).strip()]
     return tags or fallback
@@ -279,11 +285,11 @@ def extract_candidates(
     configured_page_id = str(priority_rule.get("page_id") or "") if priority_rule else ""
     configured_topic_key = str(priority_rule.get("topic_key") or "") if priority_rule else ""
     if configured_page_id:
-        page_id = slug(configured_page_id)
+        page_id = safe_page_id(configured_page_id)
     elif tracking_number:
         page_id = f"gmail-shipment-{tracking_number}"
     else:
-        page_id = f"gmail-{slug(topic_prefix.split('/')[-1])}-{slug(title)[:72]}"
+        page_id = safe_page_id(f"gmail-{slug(topic_prefix.split('/')[-1])}-{slug(title)[:72]}")
     if configured_topic_key:
         topic_key = configured_topic_key
     elif tracking_number:
